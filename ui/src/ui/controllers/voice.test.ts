@@ -164,16 +164,9 @@ class FakeURL extends URL {
 function installBrowserVoiceGlobals(params?: {
   getUserMedia?: () => Promise<FakeMediaStream>;
 }) {
-  vi.stubGlobal("window", {
-    location: {
-      href: "http://127.0.0.1:18789/",
-      protocol: "http:",
-    },
-    setTimeout: globalThis.setTimeout.bind(globalThis),
-    clearTimeout: globalThis.clearTimeout.bind(globalThis),
-  });
-  vi.stubGlobal("navigator", {
-    mediaDevices: {
+  Object.defineProperty(globalThis.navigator, "mediaDevices", {
+    configurable: true,
+    value: {
       getUserMedia:
         params?.getUserMedia ??
         vi.fn(async () => {
@@ -184,7 +177,14 @@ function installBrowserVoiceGlobals(params?: {
   vi.stubGlobal("AudioContext", FakeAudioContext);
   vi.stubGlobal("AudioWorkletNode", FakeAudioWorkletNode);
   vi.stubGlobal("WebSocket", FakeWebSocket);
-  vi.stubGlobal("URL", FakeURL);
+  Object.defineProperty(globalThis.URL, "createObjectURL", {
+    configurable: true,
+    value: FakeURL.createObjectURL,
+  });
+  Object.defineProperty(globalThis.URL, "revokeObjectURL", {
+    configurable: true,
+    value: FakeURL.revokeObjectURL,
+  });
 }
 
 function createBootstrapResponse(overrides: Record<string, unknown> = {}) {

@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 
 export const VoiceWsStartFrameSchema = Type.Object(
   {
@@ -62,6 +62,14 @@ export const VoiceWsClientFrameSchema = Type.Union(
   ],
   { discriminator: "type" },
 );
+
+export type VoiceWsStartFrame = Static<typeof VoiceWsStartFrameSchema>;
+export type VoiceWsInterruptFrame = Static<typeof VoiceWsInterruptFrameSchema>;
+export type VoiceWsStopFrame = Static<typeof VoiceWsStopFrameSchema>;
+export type VoiceWsTextFrame = Static<typeof VoiceWsTextFrameSchema>;
+export type VoiceWsPingFrame = Static<typeof VoiceWsPingFrameSchema>;
+export type VoiceWsClientFrame = Static<typeof VoiceWsClientFrameSchema>;
+
 
 export const VoiceWsReadyFrameSchema = Type.Object(
   {
@@ -145,3 +153,12 @@ export const VoiceWsServerFrameSchema = Type.Union(
   ],
   { discriminator: "type" },
 );
+
+export type VoiceWsReadyFrame = Static<typeof VoiceWsReadyFrameSchema>;
+export type VoiceWsStateFrame = Static<typeof VoiceWsStateFrameSchema>;
+export type VoiceWsTranscriptFrame = Static<typeof VoiceWsTranscriptFrameSchema>;
+export type VoiceWsToolCallFrame = Static<typeof VoiceWsToolCallFrameSchema>;
+export type VoiceWsToolResultFrame = Static<typeof VoiceWsToolResultFrameSchema>;
+export type VoiceWsErrorFrame = Static<typeof VoiceWsErrorFrameSchema>;
+export type VoiceWsPongFrame = Static<typeof VoiceWsPongFrameSchema>;
+export type VoiceWsServerFrame = Static<typeof VoiceWsServerFrameSchema>;

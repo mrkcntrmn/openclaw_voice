@@ -7,7 +7,7 @@ import {
   type OutboundCallOptions,
 } from "../types.js";
 import { mapVoiceToPolly } from "../voice-mapping.js";
-import { resolveVoiceCallSessionKey } from "../../../src/voice/session-key.js";
+import { resolveVoiceCallSessionKey } from "../../../../src/voice/session-key.js";
 import type { CallManagerContext } from "./context.js";
 import { getCallByProviderCallId } from "./lookup.js";
 import { addTranscriptEntry, transitionState } from "./state.js";
