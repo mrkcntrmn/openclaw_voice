@@ -160,7 +160,7 @@ function executeToolDefinition(
   toolCallId: string,
   params: Record<string, unknown>,
 ): Promise<unknown> {
-  const execute = tool.execute as unknown as (
+  const execute = tool.execute.bind(tool) as unknown as (
     nextToolCallId: string,
     nextParams: Record<string, unknown>,
     signal?: AbortSignal,
@@ -347,7 +347,7 @@ export async function resolveVoiceSessionConfig(params: {
     Object.keys(voice.providers ?? {})[0] ??
     DEFAULT_VOICE_PROVIDER;
   const provider = {
-    ...(voice.providers?.[providerId] ?? active?.config ?? {}),
+    ...(voice.providers?.[providerId] ?? active?.config),
   } as VoiceProviderConfig & { apiKey?: string };
 
   const resolvedApiKey = await resolveConfiguredSecretInputWithFallback({
@@ -429,14 +429,14 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     this.ws = await createWebSocket(websocketUrl, {
       Authorization: `Bearer ${apiKey}`,
       "OpenAI-Beta": "realtime=v1",
-      ...(options.provider.headers ?? {}),
+      ...options.provider.headers,
     });
 
     this.ws.on("message", (data, isBinary) => {
       if (isBinary) {
         return;
       }
-      const raw = typeof data === "string" ? data : data.toString();
+      const raw = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : (data as Buffer).toString("utf8");
       const event = parseJsonObject(raw);
       if (!event) {
         return;
@@ -694,7 +694,7 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
       if (isBinary) {
         return;
       }
-      const raw = typeof data === "string" ? data : data.toString();
+      const raw = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : (data as Buffer).toString("utf8");
       const event = parseJsonObject(raw);
       if (!event) {
         return;

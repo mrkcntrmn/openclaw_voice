@@ -121,7 +121,8 @@ function resolveVoiceSupport(): boolean {
     typeof AudioWorkletNode !== "undefined" &&
     typeof WebSocket !== "undefined" &&
     typeof navigator !== "undefined" &&
-    Boolean(navigator.mediaDevices?.getUserMedia)
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
   );
 }
 
@@ -154,7 +155,7 @@ function mergeVoiceDeprecations(existing: string[], incoming: string[]): string[
 
 function resolveVoicePreflightState(response: VoiceConfigResponse | null): VoicePreflightState {
   const voice = isRecord(response?.config?.voice)
-    ? (response?.config?.voice as NonNullable<NonNullable<VoiceConfigResponse["config"]>["voice"]>)
+    ? response?.config?.voice
     : null;
   const provider =
     normalizeString(voice?.resolved?.provider) ?? normalizeString(voice?.provider) ?? null;
@@ -288,7 +289,7 @@ async function createVoiceSessionBootstrap(host: VoiceHost): Promise<VoiceSessio
     ...(normalizeString(host.sessionKey) ? { sessionKey: normalizeString(host.sessionKey) } : {}),
     ...(normalizeString(host.assistantAgentId) ? { agentId: normalizeString(host.assistantAgentId) } : {}),
   });
-  return isRecord(response) ? (response as VoiceSessionBootstrapResponse) : null;
+  return isRecord(response) ? response : null;
 }
 
 function scheduleHistoryRefresh(host: VoiceHost, timerRef: { value: number | null }) {

@@ -46,7 +46,7 @@ export const talkHandlers: GatewayRequestHandlers = {
     const configPayload: Record<string, unknown> = {};
 
     const configSource = includeSecrets ? snapshot.config : redactConfigObject(snapshot.config);
-    const talk = buildTalkConfigResponseFromConfig(configSource as typeof snapshot.config);
+    const talk = buildTalkConfigResponseFromConfig(configSource);
     if (talk) {
       configPayload.talk = talk;
     }

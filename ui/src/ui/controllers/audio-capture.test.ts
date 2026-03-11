@@ -35,7 +35,7 @@ class FakeAudioContext {
     return new FakeAudioNode();
   }
   createGain(): { gain: { value: number } } & FakeAudioNode {
-    return { gain: { value: 1 }, ...new FakeAudioNode() };
+    return Object.assign(new FakeAudioNode(), { gain: { value: 1 } });
   }
   destination = {};
 }
@@ -43,6 +43,9 @@ class FakeAudioContext {
 class FakeAudioWorkletNode extends FakeAudioNode {
   port = {
     onmessage: null as ((event: { data: ArrayBuffer }) => void) | null,
+    addEventListener: vi.fn(),
+    start: vi.fn(),
+    close: vi.fn(),
   };
   constructor(_context: unknown, _name: string, _options?: unknown) {
     super();
@@ -77,7 +80,8 @@ describe("AudioCapture", () => {
     });
 
     await capture.start();
-    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalled();
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(vi.mocked(navigator.mediaDevices.getUserMedia)).toHaveBeenCalled();
 
     await capture.stop();
   });

@@ -163,7 +163,8 @@ export class OpenClawApp extends LitElement {
   @state() chatManualRefreshInFlight = false;
   @state() voiceSupported =
     typeof navigator !== "undefined" &&
-    Boolean(navigator.mediaDevices?.getUserMedia) &&
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) &&
     typeof AudioContext !== "undefined" &&
     typeof AudioWorkletNode !== "undefined";
   @state() voiceAvailable = false;

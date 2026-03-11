@@ -462,7 +462,7 @@ export function normalizeVoiceSection(
   const providerId = provider ?? (providers && Object.keys(providers).length === 1 ? Object.keys(providers)[0] : undefined);
   if (providerId && legacyProvider) {
     providers = {
-      ...(providers ?? {}),
+      ...providers,
       [providerId]: mergeDefined(providers?.[providerId], legacyProvider) ?? legacyProvider,
     };
   }
