@@ -21,17 +21,12 @@ import {
 import type { VoiceSessionTicketStore } from "../voice/session-ticket.js";
 import WebSocket, { type WebSocketServer } from "ws";
 import {
-  type VoiceWsClientFrame,
   validateVoiceWsClientFrame,
   formatValidationErrors,
 } from "./protocol/index.js";
 
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
 const MAX_AUDIO_FRAME_BYTES = 128_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function normalizeString(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -41,11 +36,11 @@ function normalizeString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseControlFrame(raw: string): VoiceWsClientFrame | null {
+function parseControlFrame(raw: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (validateVoiceWsClientFrame(parsed)) {
-      return parsed;
+      return parsed as Record<string, unknown>;
     }
     return null;
   } catch {
@@ -150,10 +145,11 @@ async function handleVoiceConnection(params: {
           closeWithError(params.ws, 4400, "voice start frame must be JSON");
           return;
         }
-        const frame = parseControlFrame(typeof data === "string" ? data : data.toString());
+      const rawFrame = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : (data as Buffer).toString("utf8");
+      const frame = parseControlFrame(rawFrame);
         if (!frame || frame.type !== "start") {
           if (!frame && (typeof data === "string" || Buffer.isBuffer(data))) {
-            const raw = typeof data === "string" ? data : data.toString();
+          const raw = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : (data as Buffer).toString("utf8");
             try {
               const parsed = JSON.parse(raw);
               validateVoiceWsClientFrame(parsed);
@@ -248,10 +244,11 @@ async function handleVoiceConnection(params: {
         runtime.orchestrator.sendAudio(audio);
         return;
       }
-      const frame = parseControlFrame(typeof data === "string" ? data : data.toString());
+      const rawFrameControl = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : (data as Buffer).toString("utf8");
+      const frame = parseControlFrame(rawFrameControl);
       if (!frame) {
         if (typeof data === "string" || Buffer.isBuffer(data)) {
-          const raw = typeof data === "string" ? data : data.toString();
+          const raw = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : (data as Buffer).toString("utf8");
           try {
             const parsed = JSON.parse(raw);
             validateVoiceWsClientFrame(parsed);

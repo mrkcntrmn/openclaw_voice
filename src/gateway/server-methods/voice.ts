@@ -64,7 +64,7 @@ export const voiceHandlers: GatewayRequestHandlers = {
     const snapshot = await readConfigFileSnapshot();
     const configPayload: Record<string, unknown> = {};
     const configSource = includeSecrets ? snapshot.config : redactConfigObject(snapshot.config);
-    const voice = buildVoiceConfigResponseFromConfig(configSource as typeof snapshot.config);
+    const voice = buildVoiceConfigResponseFromConfig(configSource);
     if (voice) {
       configPayload.voice = voice;
     }
@@ -129,7 +129,7 @@ export const voiceHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    if (resolved.browser.enabled === false) {
+    if (!resolved.browser.enabled) {
       respond(
         false,
         undefined,

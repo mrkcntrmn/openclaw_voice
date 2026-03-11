@@ -124,13 +124,14 @@ export class AudioCapture {
       },
     });
 
-    this.worklet.port.onmessage = (event: MessageEvent<ArrayBuffer | { type: "volume"; value: number }>) => {
+    this.worklet.port.addEventListener("message", (event: MessageEvent<ArrayBuffer | { type: "volume"; value: number }>) => {
       if (typeof event.data === "object" && event.data !== null && "type" in event.data && event.data.type === "volume") {
         this.options.onVolumeChange?.(event.data.value);
         return;
       }
       this.options.onAudioData(event.data as ArrayBuffer);
-    };
+    });
+    this.worklet.port.start();
 
     this.sink = this.context.createGain();
     this.sink.gain.value = 0;
@@ -142,8 +143,8 @@ export class AudioCapture {
 
   async stop(): Promise<void> {
     if (this.worklet) {
-      this.worklet.port.onmessage = null;
       try {
+        this.worklet.port.close();
         this.worklet.disconnect();
       } catch {
         // Ignore

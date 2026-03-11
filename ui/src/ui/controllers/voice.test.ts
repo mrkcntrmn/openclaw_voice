@@ -87,6 +87,9 @@ class FakeAudioContext {
 class FakeAudioWorkletNode extends FakeAudioNode {
   port = {
     onmessage: null as ((event: { data: ArrayBuffer }) => void) | null,
+    addEventListener: vi.fn(),
+    start: vi.fn(),
+    close: vi.fn(),
   };
 
   constructor(_context: unknown, _name: string, _options?: unknown) {
@@ -322,7 +325,7 @@ describe("handleVoiceConnect", () => {
 
     ws?.emitOpen();
     expect(ws?.sent).toHaveLength(1);
-    expect(JSON.parse(String(ws?.sent[0]))).toEqual({ type: "start", ticket: "voice-ticket" });
+    expect(JSON.parse(ws?.sent[0] as string)).toEqual({ type: "start", ticket: "voice-ticket" });
 
     ws?.emitMessage(
       JSON.stringify({

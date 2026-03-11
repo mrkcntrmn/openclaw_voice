@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, vi, beforeEach, afterEach } from "vitest";
 import { AudioPlayback } from "./audio-playback.ts";
 
 class FakeAudioNode {
