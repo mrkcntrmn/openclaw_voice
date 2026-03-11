@@ -8,6 +8,10 @@ title: "Talk Mode"
 
 # Talk Mode
 
+<Tip>
+Top-level `voice` is now the canonical browser/dashboard voice config. Keep `talk` only as a backward-compatible input for legacy node/mobile Talk clients.
+</Tip>
+
 Talk mode is a continuous voice conversation loop:
 
 1. Listen for speech
@@ -48,6 +52,38 @@ Supported keys:
 - `once`
 
 ## Config (`~/.openclaw/openclaw.json`)
+
+Canonical browser/dashboard voice config:
+
+```json5
+{
+  voice: {
+    provider: "openai-realtime",
+    providers: {
+      "openai-realtime": {
+        apiKey: "openai_api_key",
+        modelId: "gpt-4o-realtime-preview",
+      },
+    },
+    browser: {
+      enabled: true,
+      wsPath: "/voice/ws",
+      sampleRateHz: 16000,
+      channels: 1,
+      frameDurationMs: 20,
+    },
+    session: {
+      interruptOnSpeech: true,
+      pauseOnToolCall: true,
+      persistTranscripts: true,
+      sharedChatHistory: true,
+      transcriptSource: "provider",
+    },
+  },
+}
+```
+
+Legacy Talk input (still normalized into `voice` for compatibility):
 
 ```json5
 {

@@ -1647,9 +1647,58 @@ Batches rapid text-only messages from the same sender into a single agent turn. 
 
 ---
 
+## Voice
+
+Canonical browser/dashboard voice config. This drives `voice.config`, `voice.session.create`, and the Control UI browser voice websocket flow.
+
+```json5
+{
+  voice: {
+    provider: "openai-realtime",
+    providers: {
+      "openai-realtime": {
+        apiKey: "openai_api_key",
+        modelId: "gpt-4o-realtime-preview",
+      },
+      "google-gemini-live": {
+        apiKey: "gemini_api_key",
+        modelId: "gemini-2.0-flash-exp",
+      },
+    },
+    browser: {
+      enabled: true,
+      wsPath: "/voice/ws",
+      sampleRateHz: 16000,
+      channels: 1,
+      frameDurationMs: 20,
+      authTimeoutMs: 10000,
+      vad: "provider",
+    },
+    session: {
+      interruptOnSpeech: true,
+      pauseOnToolCall: true,
+      persistTranscripts: true,
+      sharedChatHistory: true,
+      transcriptSource: "provider",
+      sessionKeyPrefix: "voice",
+    },
+  },
+}
+```
+
+- `voice` is the canonical browser voice config surface.
+- Control UI browser voice bootstraps with `voice.session.create`, then opens `/voice/ws` and sends a one-time `ticket` in the `start` frame.
+- `browser.wsPath` defaults to `/voice/ws`; browser transport defaults to 16 kHz mono PCM16.
+- Final provider transcripts are appended to normal chat history when `session.persistTranscripts` and `session.sharedChatHistory` are enabled (both default to `true`).
+- `providers.*.apiKey` accept plaintext strings or SecretRef objects.
+- `messaging`, `channels`, and `deployment` are phase-gated scaffolding for future voice surfaces; the supported MVP is browser/dashboard voice only.
+- `plugins.entries.voice-call.config` is deprecated for browser voice and ignored by the browser runtime.
+
+---
+
 ## Talk
 
-Defaults for Talk mode (macOS/iOS/Android).
+Backward-compatible legacy Talk input for node/mobile clients. When present, Talk fields are normalized into top-level `voice`.
 
 ```json5
 {
@@ -1668,6 +1717,7 @@ Defaults for Talk mode (macOS/iOS/Android).
 }
 ```
 
+- `talk` remains supported as a compatibility input, but new browser voice config should be placed under `voice`.
 - Voice IDs fall back to `ELEVENLABS_VOICE_ID` or `SAG_VOICE_ID`.
 - `apiKey` and `providers.*.apiKey` accept plaintext strings or SecretRef objects.
 - `ELEVENLABS_API_KEY` fallback applies only when no Talk API key is configured.

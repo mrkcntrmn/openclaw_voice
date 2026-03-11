@@ -7,6 +7,7 @@ import {
   type OutboundCallOptions,
 } from "../types.js";
 import { mapVoiceToPolly } from "../voice-mapping.js";
+import { resolveVoiceCallSessionKey } from "../../../src/voice/session-key.js";
 import type { CallManagerContext } from "./context.js";
 import { getCallByProviderCallId } from "./lookup.js";
 import { addTranscriptEntry, transitionState } from "./state.js";
@@ -142,7 +143,12 @@ export async function initiateCall(
     state: "initiated",
     from,
     to,
-    sessionKey,
+    sessionKey: resolveVoiceCallSessionKey({
+      sessionKey,
+      direction: "outbound",
+      from,
+      to,
+    }),
     startedAt: Date.now(),
     transcript: [],
     processedEventIds: [],

@@ -96,6 +96,127 @@ export type TalkConfigResponse = TalkConfig & {
   resolved?: ResolvedTalkConfig;
 };
 
+export type VoiceProviderConfig = TalkProviderConfig & {
+  /** Optional websocket endpoint override for live providers. */
+  websocketUrl?: string;
+  /** Provider-specific API version or protocol tag. */
+  apiVersion?: string;
+  /** Dedicated transcription model id when separate from modelId. */
+  transcriptionModelId?: string;
+  /** Input audio MIME type or symbolic format (for example pcm16). */
+  inputAudioFormat?: string;
+  /** Output audio MIME type or symbolic format (for example pcm16). */
+  outputAudioFormat?: string;
+  /** Optional extra headers forwarded to the live provider connection. */
+  headers?: Record<string, string>;
+};
+
+export type ResolvedVoiceConfig = {
+  /** Active voice provider resolved from the current config payload. */
+  provider: string;
+  /** Provider config for the active voice provider. */
+  config: VoiceProviderConfig;
+};
+
+export type VoiceBrowserConfig = {
+  /** Enable browser voice mode on the Control UI. */
+  enabled?: boolean;
+  /** Gateway websocket path for browser voice sessions. */
+  wsPath?: string;
+  /** Browser capture/playback sample rate. */
+  sampleRateHz?: number;
+  /** Browser capture/playback channel count. */
+  channels?: number;
+  /** Target frame duration for streamed PCM16 chunks. */
+  frameDurationMs?: number;
+  /** Primary VAD owner for browser sessions. */
+  vad?: "client" | "provider" | "server";
+  /** Time allowed for the initial authenticated start frame. */
+  authTimeoutMs?: number;
+};
+
+export type VoiceSessionConfig = {
+  /** Stop speaking when the user starts talking. */
+  interruptOnSpeech?: boolean;
+  /** Pause generation while a tool call is in flight. */
+  pauseOnToolCall?: boolean;
+  /** Persist finalized voice turns into the normal session transcript. */
+  persistTranscripts?: boolean;
+  /** Provider transcripts are the source of truth for finalized turns. */
+  transcriptSource?: "provider";
+  /** Silence timeout for turn detection and compatibility with Talk mode. */
+  silenceTimeoutMs?: number;
+  /** Persist voice sessions under the same session namespace as chat. */
+  sharedChatHistory?: boolean;
+  /** Prefix used when the gateway generates browser voice session keys. */
+  sessionKeyPrefix?: string;
+};
+
+export type VoiceMessagingConfig = {
+  /** Phase 2 gateway for async messaging voice notes. */
+  enabled?: boolean;
+  ingest?: {
+    enabled?: boolean;
+    allowedMimes?: string[];
+    targetSampleRateHz?: number;
+  };
+  walkieTalkie?: {
+    enabled?: boolean;
+    replyMimeType?: string;
+    includeTranscript?: boolean;
+  };
+};
+
+export type VoicePersistentChannelsConfig = {
+  /** Phase 3 passive channel support. */
+  enabled?: boolean;
+  vad?: {
+    enabled?: boolean;
+    provider?: "server";
+    library?: string;
+    threshold?: number;
+    silenceDurationMs?: number;
+  };
+  integrations?: {
+    discord?: { enabled?: boolean };
+    telegram?: { enabled?: boolean };
+  };
+};
+
+export type VoiceDeploymentConfig = {
+  ffmpeg?: {
+    enabled?: boolean;
+    binaryPath?: string;
+  };
+  websocket?: {
+    maxSessionMinutes?: number;
+  };
+};
+
+export type VoiceConfig = {
+  /** Active voice provider (for example "openai-realtime" or "gemini-live"). */
+  provider?: string;
+  /** Provider-specific voice config keyed by provider id. */
+  providers?: Record<string, VoiceProviderConfig>;
+  /** Browser/dashboard realtime voice transport settings. */
+  browser?: VoiceBrowserConfig;
+  /** Shared browser voice session behavior. */
+  session?: VoiceSessionConfig;
+  /** Phase-gated async voice messaging config. */
+  messaging?: VoiceMessagingConfig;
+  /** Phase-gated persistent channel voice config. */
+  channels?: VoicePersistentChannelsConfig;
+  /** Deployment and CI/runtime hints for voice infrastructure. */
+  deployment?: VoiceDeploymentConfig;
+};
+
+export type VoiceConfigResponse = VoiceConfig & {
+  /** Canonical active voice payload for clients. */
+  resolved?: ResolvedVoiceConfig;
+  /** Soft deprecation warnings for legacy voice-call config inputs. */
+  deprecations?: string[];
+};
+
 export type GatewayControlUiConfig = {
   /** If false, the Gateway will not serve the Control UI (default /). */
   enabled?: boolean;

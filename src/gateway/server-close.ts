@@ -29,6 +29,7 @@ export function createGatewayCloseHandler(params: {
   configReloader: { stop: () => Promise<void> };
   browserControl: { stop: () => Promise<void> } | null;
   wss: WebSocketServer;
+  voiceWss?: WebSocketServer;
   httpServer: HttpServer;
   httpServers?: HttpServer[];
 }) {
@@ -118,6 +119,9 @@ export function createGatewayCloseHandler(params: {
     if (params.browserControl) {
       await params.browserControl.stop().catch(() => {});
     }
+    if (params.voiceWss && params.voiceWss !== params.wss) {
+      await new Promise<void>((resolve) => params.voiceWss?.close(() => resolve()));
+    }
     await new Promise<void>((resolve) => params.wss.close(() => resolve()));
     const servers =
       params.httpServers && params.httpServers.length > 0
@@ -136,3 +140,5 @@ export function createGatewayCloseHandler(params: {
     }
   };
 }
+
+

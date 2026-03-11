@@ -466,6 +466,7 @@ export class VoiceCallWebhookServer {
         voiceConfig: this.config,
         coreConfig: this.coreConfig,
         callId,
+        sessionKey: call.sessionKey,
         from: call.from,
         transcript: call.transcript,
         userMessage,

@@ -6,6 +6,7 @@
 import crypto from "node:crypto";
 import type { VoiceCallConfig } from "./config.js";
 import { loadCoreAgentDeps, type CoreConfig } from "./core-bridge.js";
+import { resolveVoiceCallSessionKey } from "../../../src/voice/session-key.js";
 
 export type VoiceResponseParams = {
   /** Voice call config */
@@ -14,6 +15,8 @@ export type VoiceResponseParams = {
   coreConfig: CoreConfig;
   /** Call ID for session tracking */
   callId: string;
+  /** Optional pre-resolved OpenClaw session key */
+  sessionKey?: string;
   /** Caller's phone number */
   from: string;
   /** Conversation transcript */
@@ -39,7 +42,15 @@ type SessionEntry = {
 export async function generateVoiceResponse(
   params: VoiceResponseParams,
 ): Promise<VoiceResponseResult> {
-  const { voiceConfig, callId, from, transcript, userMessage, coreConfig } = params;
+  const {
+    voiceConfig,
+    callId,
+    from,
+    transcript,
+    userMessage,
+    coreConfig,
+    sessionKey: requestedSessionKey,
+  } = params;
 
   if (!coreConfig) {
     return { text: null, error: "Core config unavailable for voice response" };
@@ -56,9 +67,12 @@ export async function generateVoiceResponse(
   }
   const cfg = coreConfig;
 
-  // Build voice-specific session key based on phone number
-  const normalizedPhone = from.replace(/\D/g, "");
-  const sessionKey = `voice:${normalizedPhone}`;
+  const sessionKey =
+    resolveVoiceCallSessionKey({
+      sessionKey: requestedSessionKey,
+      direction: "inbound",
+      from,
+    }) ?? `voice:call:${callId}`;
   const agentId = "main";
 
   // Resolve paths

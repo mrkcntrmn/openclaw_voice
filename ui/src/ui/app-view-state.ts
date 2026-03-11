@@ -67,6 +67,15 @@ export type AppViewState = {
   chatThinkingLevel: string | null;
   chatQueue: ChatQueueItem[];
   chatManualRefreshInFlight: boolean;
+  voiceSupported: boolean;
+  voiceConnecting: boolean;
+  voiceConnected: boolean;
+  voiceStatus: string | null;
+  voiceError: string | null;
+  voiceUserTranscript: string | null;
+  voiceAssistantTranscript: string | null;
+  voiceSessionKey: string | null;
+  voiceProvider: string | null;
   nodesLoading: boolean;
   nodes: Array<Record<string, unknown>>;
   chatNewMessagesBelow: boolean;
@@ -310,6 +319,9 @@ export type AppViewState = {
     setChatMessage: (next: string) => void;
     handleSendChat: (messageOverride?: string, opts?: { restoreDraft?: boolean }) => Promise<void>;
     handleAbortChat: () => Promise<void>;
+    handleVoiceConnect: () => Promise<void>;
+    handleVoiceDisconnect: (opts?: { preserveError?: boolean }) => Promise<void>;
+    handleVoiceInterrupt: () => void;
     removeQueuedMessage: (id: string) => void;
     handleChatScroll: (event: Event) => void;
     resetToolStream: () => void;
@@ -320,3 +332,5 @@ export type AppViewState = {
     handleCloseSidebar: () => void;
     handleSplitRatioChange: (ratio: number) => void;
   };
+
+

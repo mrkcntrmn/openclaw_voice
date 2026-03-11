@@ -21,6 +21,7 @@ import {
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
+import { listVoiceConfigDeprecations } from "../config/voice.js";
 import { clearAgentRunContext, onAgentEvent } from "../infra/agent-events.js";
 import {
   ensureControlUiAssetsBuilt,
@@ -461,6 +462,9 @@ export async function startGatewayServer(
     writeConfig: writeConfigFile,
     log,
   });
+  for (const message of listVoiceConfigDeprecations(cfgAtStart)) {
+    log.warn(message);
+  }
 
   initSubagentRegistry();
   const defaultAgentId = resolveDefaultAgentId(cfgAtStart);
@@ -585,6 +589,7 @@ export async function startGatewayServer(
     httpServers,
     httpBindHosts,
     wss,
+    voiceWss,
     clients,
     broadcast,
     broadcastToConnIds,
@@ -597,6 +602,7 @@ export async function startGatewayServer(
     removeChatRun,
     chatAbortControllers,
     toolEventRecipients,
+    voiceSessionTickets,
   } = await createGatewayRuntimeState({
     cfg: cfgAtStart,
     bindHost,
@@ -861,6 +867,7 @@ export async function startGatewayServer(
     markChannelLoggedOut,
     wizardRunner,
     broadcastVoiceWakeChanged,
+    voiceSessionTickets,
   };
 
   // Store the gateway context as a fallback for plugin subagent dispatch
@@ -1035,6 +1042,7 @@ export async function startGatewayServer(
     configReloader,
     browserControl,
     wss,
+    voiceWss,
     httpServer,
     httpServers,
   });

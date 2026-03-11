@@ -8,6 +8,7 @@ import {
   resolveActiveTalkProviderConfig,
   resolveTalkApiKey,
 } from "./talk.js";
+import { normalizeVoiceConfig } from "./voice.js";
 import type { OpenClawConfig } from "./types.js";
 import type { ModelDefinitionConfig } from "./types.models.js";
 import { hasConfiguredSecretInput } from "./types.secrets.js";
@@ -200,14 +201,14 @@ export function applyTalkApiKey(config: OpenClawConfig): OpenClawConfig {
     providers,
   };
 
-  return {
+  return normalizeVoiceConfig({
     ...normalized,
     talk: nextTalk,
-  };
+  });
 }
 
 export function applyTalkConfigNormalization(config: OpenClawConfig): OpenClawConfig {
-  return normalizeTalkConfig(config);
+  return normalizeVoiceConfig(normalizeTalkConfig(config));
 }
 
 export function applyModelDefaults(cfg: OpenClawConfig): OpenClawConfig {

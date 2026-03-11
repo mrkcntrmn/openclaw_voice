@@ -4,11 +4,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runNodePackageBin } from "./local-package-bin.mjs";
 
-const logLevel = process.env.OPENCLAW_BUILD_VERBOSE ? "info" : "warn";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const result = runNodePackageBin({
-  packageName: "tsdown",
-  args: ["--config-loader", "unrun", "--logLevel", logLevel],
+  packageName: "typescript",
+  binName: "tsc",
+  args: ["-p", "tsconfig.plugin-sdk.dts.json"],
   cwd: repoRoot,
 });
 

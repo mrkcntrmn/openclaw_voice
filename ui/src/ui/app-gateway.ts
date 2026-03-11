@@ -95,6 +95,7 @@ type GatewayHost = {
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalError: string | null;
   updateAvailable: UpdateAvailable | null;
+  handleVoiceDisconnect: (opts?: { preserveError?: boolean }) => Promise<void>;
 };
 
 type SessionDefaultsSnapshot = {
@@ -190,6 +191,7 @@ export function connectGateway(host: GatewayHost) {
   host.connected = false;
   host.execApprovalQueue = [];
   host.execApprovalError = null;
+  void host.handleVoiceDisconnect();
 
   const previousClient = host.client;
   const clientVersion = resolveControlUiClientVersion({
@@ -231,6 +233,7 @@ export function connectGateway(host: GatewayHost) {
         return;
       }
       host.connected = false;
+      void host.handleVoiceDisconnect();
       // Code 1012 = Service Restart (expected during config saves, don't show as error)
       host.lastErrorCode =
         resolveGatewayErrorDetailCode(error) ??
@@ -422,3 +425,6 @@ export function applySnapshot(host: GatewayHost, hello: GatewayHelloOk) {
   }
   host.updateAvailable = snapshot?.updateAvailable ?? null;
 }
+
+
+

@@ -48,6 +48,14 @@ import {
   TalkConfigParamsSchema,
   type TalkConfigResult,
   TalkConfigResultSchema,
+  type VoiceConfigParams,
+  VoiceConfigParamsSchema,
+  type VoiceConfigResult,
+  VoiceConfigResultSchema,
+  type VoiceSessionCreateParams,
+  VoiceSessionCreateParamsSchema,
+  type VoiceSessionCreateResult,
+  VoiceSessionCreateResultSchema,
   type ChannelsStatusParams,
   ChannelsStatusParamsSchema,
   type ChannelsStatusResult,
@@ -354,6 +362,14 @@ export const validateWizardStatusParams = ajv.compile<WizardStatusParams>(Wizard
 export const validateTalkModeParams = ajv.compile<TalkModeParams>(TalkModeParamsSchema);
 export const validateTalkConfigParams = ajv.compile<TalkConfigParams>(TalkConfigParamsSchema);
 export const validateTalkConfigResult = ajv.compile<TalkConfigResult>(TalkConfigResultSchema);
+export const validateVoiceConfigParams = ajv.compile<VoiceConfigParams>(VoiceConfigParamsSchema);
+export const validateVoiceConfigResult = ajv.compile<VoiceConfigResult>(VoiceConfigResultSchema);
+export const validateVoiceSessionCreateParams = ajv.compile<VoiceSessionCreateParams>(
+  VoiceSessionCreateParamsSchema,
+);
+export const validateVoiceSessionCreateResult = ajv.compile<VoiceSessionCreateResult>(
+  VoiceSessionCreateResultSchema,
+);
 export const validateChannelsStatusParams = ajv.compile<ChannelsStatusParams>(
   ChannelsStatusParamsSchema,
 );
@@ -515,6 +531,10 @@ export {
   WizardStatusResultSchema,
   TalkConfigParamsSchema,
   TalkConfigResultSchema,
+  VoiceConfigParamsSchema,
+  VoiceConfigResultSchema,
+  VoiceSessionCreateParamsSchema,
+  VoiceSessionCreateResultSchema,
   ChannelsStatusParamsSchema,
   ChannelsStatusResultSchema,
   ChannelsLogoutParamsSchema,
@@ -604,6 +624,10 @@ export type {
   WizardStatusResult,
   TalkConfigParams,
   TalkConfigResult,
+  VoiceConfigParams,
+  VoiceConfigResult,
+  VoiceSessionCreateParams,
+  VoiceSessionCreateResult,
   TalkModeParams,
   ChannelsStatusParams,
   ChannelsStatusResult,

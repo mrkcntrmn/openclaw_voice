@@ -6,6 +6,7 @@ import type { CliDeps } from "../cli/deps.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import type { PluginRegistry } from "../plugins/registry.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { createVoiceSessionTicketStore } from "../voice/session-ticket.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
@@ -24,6 +25,7 @@ import {
 } from "./server-chat.js";
 import { MAX_PAYLOAD_BYTES } from "./server-constants.js";
 import { attachGatewayUpgradeHandler, createGatewayHttpServer } from "./server-http.js";
+import { attachGatewayVoiceWsHandlers } from "./server-voice.js";
 import type { DedupeEntry } from "./server-shared.js";
 import { createGatewayHooksRequestHandler } from "./server/hooks.js";
 import { listenGatewayHttpServer } from "./server/http-listen.js";
@@ -69,6 +71,7 @@ export async function createGatewayRuntimeState(params: {
   httpServers: HttpServer[];
   httpBindHosts: string[];
   wss: WebSocketServer;
+  voiceWss: WebSocketServer;
   clients: Set<GatewayWsClient>;
   broadcast: GatewayBroadcastFn;
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
@@ -85,6 +88,7 @@ export async function createGatewayRuntimeState(params: {
   ) => ChatRunEntry | undefined;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   toolEventRecipients: ReturnType<typeof createToolEventRecipientRegistry>;
+  voiceSessionTickets: ReturnType<typeof createVoiceSessionTicketStore>;
 }> {
   let canvasHost: CanvasHostHandler | null = null;
   if (params.canvasHostEnabled) {
@@ -187,10 +191,22 @@ export async function createGatewayRuntimeState(params: {
     noServer: true,
     maxPayload: MAX_PAYLOAD_BYTES,
   });
+  const voiceWss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_PAYLOAD_BYTES,
+  });
+  const voiceSessionTickets = createVoiceSessionTicketStore();
+  attachGatewayVoiceWsHandlers({
+    voiceWss,
+    resolvedAuth: params.resolvedAuth,
+    ticketStore: voiceSessionTickets,
+    rateLimiter: params.rateLimiter,
+  });
   for (const server of httpServers) {
     attachGatewayUpgradeHandler({
       httpServer: server,
       wss,
+      voiceWss,
       canvasHost,
       clients,
       resolvedAuth: params.resolvedAuth,
@@ -215,6 +231,7 @@ export async function createGatewayRuntimeState(params: {
     httpServers,
     httpBindHosts,
     wss,
+    voiceWss,
     clients,
     broadcast,
     broadcastToConnIds,
@@ -227,5 +244,6 @@ export async function createGatewayRuntimeState(params: {
     removeChatRun,
     chatAbortControllers,
     toolEventRecipients,
+    voiceSessionTickets,
   };
 }

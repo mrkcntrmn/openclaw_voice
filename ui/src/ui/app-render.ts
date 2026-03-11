@@ -1026,6 +1026,16 @@ export function renderApp(state: AppViewState) {
                 onOpenSidebar: (content: string) => state.handleOpenSidebar(content),
                 onCloseSidebar: () => state.handleCloseSidebar(),
                 onSplitRatioChange: (ratio: number) => state.handleSplitRatioChange(ratio),
+                voiceSupported: state.voiceSupported,
+                voiceConnecting: state.voiceConnecting,
+                voiceConnected: state.voiceConnected,
+                voiceStatus: state.voiceStatus,
+                voiceError: state.voiceError,
+                voiceUserTranscript: state.voiceUserTranscript,
+                voiceAssistantTranscript: state.voiceAssistantTranscript,
+                onVoiceConnect: () => state.handleVoiceConnect(),
+                onVoiceDisconnect: () => void state.handleVoiceDisconnect(),
+                onVoiceInterrupt: () => state.handleVoiceInterrupt(),
                 assistantName: state.assistantName,
                 assistantAvatar: state.assistantAvatar,
               })
@@ -1122,3 +1132,4 @@ export function renderApp(state: AppViewState) {
     </div>
   `;
 }
+

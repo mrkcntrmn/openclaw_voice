@@ -68,6 +68,7 @@ import {
 import type { ReadinessChecker } from "./server/readiness.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
+import { resolveGatewayVoiceWsPath } from "./server-voice.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
@@ -788,13 +789,14 @@ export function createGatewayHttpServer(opts: {
 export function attachGatewayUpgradeHandler(opts: {
   httpServer: HttpServer;
   wss: WebSocketServer;
+  voiceWss?: WebSocketServer;
   canvasHost: CanvasHostHandler | null;
   clients: Set<GatewayWsClient>;
   resolvedAuth: ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
 }) {
-  const { httpServer, wss, canvasHost, clients, resolvedAuth, rateLimiter } = opts;
+  const { httpServer, wss, voiceWss, canvasHost, clients, resolvedAuth, rateLimiter } = opts;
   httpServer.on("upgrade", (req, socket, head) => {
     void (async () => {
       const scopedCanvas = normalizeCanvasScopedUrl(req.url ?? "/");
@@ -806,8 +808,14 @@ export function attachGatewayUpgradeHandler(opts: {
       if (scopedCanvas.rewrittenUrl) {
         req.url = scopedCanvas.rewrittenUrl;
       }
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (voiceWss && url.pathname === resolveGatewayVoiceWsPath()) {
+        voiceWss.handleUpgrade(req, socket, head, (ws) => {
+          voiceWss.emit("connection", ws, req);
+        });
+        return;
+      }
       if (canvasHost) {
-        const url = new URL(req.url ?? "/", "http://localhost");
         if (url.pathname === CANVAS_WS_PATH) {
           const configSnapshot = loadConfig();
           const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
@@ -840,3 +848,7 @@ export function attachGatewayUpgradeHandler(opts: {
     });
   });
 }
+
+
+
+

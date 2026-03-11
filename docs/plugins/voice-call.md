@@ -8,6 +8,10 @@ title: "Voice Call Plugin"
 
 # Voice Call (plugin)
 
+<Warning>
+Browser/dashboard voice no longer uses `plugins.entries.voice-call.config`. The supported voice MVP is top-level `voice` plus Control UI browser voice. Keep this plugin only if you still need legacy telephony flows.
+</Warning>
+
 Voice calls for OpenClaw via a plugin. Supports outbound notifications and
 multi-turn conversations with inbound policies.
 

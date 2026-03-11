@@ -34,6 +34,8 @@ const BASE_METHODS = [
   "wizard.cancel",
   "wizard.status",
   "talk.config",
+  "voice.config",
+  "voice.session.create",
   "talk.mode",
   "models.list",
   "tools.catalog",

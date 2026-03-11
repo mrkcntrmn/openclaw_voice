@@ -1,0 +1,320 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const chatMocks = vi.hoisted(() => ({
+  loadChatHistory: vi.fn(async () => undefined),
+}));
+
+vi.mock("./chat.ts", () => ({
+  loadChatHistory: chatMocks.loadChatHistory,
+}));
+
+import { handleVoiceConnect, handleVoiceDisconnect, handleVoiceInterrupt } from "./voice.ts";
+
+const wsInstances: FakeWebSocket[] = [];
+
+class FakeTrack {
+  stopped = false;
+
+  stop(): void {
+    this.stopped = true;
+  }
+}
+
+class FakeMediaStream {
+  private readonly tracks = [new FakeTrack()];
+
+  getTracks(): FakeTrack[] {
+    return this.tracks;
+  }
+}
+
+class FakeAudioNode {
+  connect = vi.fn(() => this);
+  disconnect = vi.fn();
+}
+
+class FakeGainNode extends FakeAudioNode {
+  gain = { value: 1 };
+}
+
+class FakeAudioBufferSourceNode extends FakeAudioNode {
+  buffer: { duration: number } | null = null;
+  addEventListener = vi.fn();
+  start = vi.fn();
+}
+
+class FakeAudioContext {
+  state: "running" | "closed" = "running";
+  currentTime = 0;
+  destination = {};
+  audioWorklet = {
+    addModule: vi.fn(async () => undefined),
+  };
+
+  async resume(): Promise<void> {
+    return;
+  }
+
+  async close(): Promise<void> {
+    this.state = "closed";
+  }
+
+  createMediaStreamSource(): FakeAudioNode {
+    return new FakeAudioNode();
+  }
+
+  createGain(): FakeGainNode {
+    return new FakeGainNode();
+  }
+
+  createBuffer(_channels: number, length: number, sampleRate: number) {
+    return {
+      duration: length / sampleRate,
+      copyToChannel: vi.fn(),
+    };
+  }
+
+  createBufferSource(): FakeAudioBufferSourceNode {
+    return new FakeAudioBufferSourceNode();
+  }
+}
+
+class FakeAudioWorkletNode extends FakeAudioNode {
+  port = {
+    onmessage: null as ((event: { data: ArrayBuffer }) => void) | null,
+  };
+
+  constructor(_context: unknown, _name: string, _options?: unknown) {
+    super();
+  }
+}
+
+class FakeWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+
+  readonly sent: Array<string | ArrayBuffer> = [];
+  readonly listeners = new Map<string, Set<(event: unknown) => void>>();
+  readonly url: string;
+  readyState = FakeWebSocket.CONNECTING;
+  binaryType = "blob";
+
+  constructor(url: string) {
+    this.url = url;
+    wsInstances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: unknown) => void): void {
+    const existing = this.listeners.get(type) ?? new Set();
+    existing.add(listener);
+    this.listeners.set(type, existing);
+  }
+
+  removeEventListener(type: string, listener: (event: unknown) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  send(payload: string | ArrayBuffer): void {
+    this.sent.push(payload);
+  }
+
+  close(code = 1000, reason = ""): void {
+    if (this.readyState === FakeWebSocket.CLOSED) {
+      return;
+    }
+    this.readyState = FakeWebSocket.CLOSED;
+    this.emit("close", { code, reason });
+  }
+
+  emitOpen(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.emit("open", {});
+  }
+
+  emitError(): void {
+    this.emit("error", {});
+  }
+
+  emitMessage(data: unknown): void {
+    this.emit("message", { data });
+  }
+
+  private emit(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+}
+
+class FakeURL extends URL {
+  static createObjectURL = vi.fn(() => "blob:voice-test");
+  static revokeObjectURL = vi.fn();
+}
+
+function installBrowserVoiceGlobals(params?: {
+  getUserMedia?: () => Promise<FakeMediaStream>;
+}) {
+  vi.stubGlobal("window", {
+    location: {
+      href: "http://127.0.0.1:18789/",
+      protocol: "http:",
+    },
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+  });
+  vi.stubGlobal("navigator", {
+    mediaDevices: {
+      getUserMedia:
+        params?.getUserMedia ??
+        vi.fn(async () => {
+          return new FakeMediaStream();
+        }),
+    },
+  });
+  vi.stubGlobal("AudioContext", FakeAudioContext);
+  vi.stubGlobal("AudioWorkletNode", FakeAudioWorkletNode);
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+  vi.stubGlobal("URL", FakeURL);
+}
+
+function createHost(overrides: Record<string, unknown> = {}) {
+  return {
+    settings: { gatewayUrl: "http://127.0.0.1:18789" },
+    password: "",
+    client: {
+      request: vi.fn(async () => ({
+        ticket: "voice-ticket",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+        modelId: "gpt-4o-realtime-preview",
+        transport: {
+          wsPath: "/voice/ws",
+          sampleRateHz: 16000,
+          channels: 1,
+          frameDurationMs: 20,
+        },
+      })),
+    },
+    connected: true,
+    sessionKey: "main",
+    assistantAgentId: null,
+    chatLoading: false,
+    chatMessages: [],
+    chatThinkingLevel: null,
+    chatStream: null,
+    chatStreamStartedAt: null,
+    lastError: null,
+    voiceSupported: false,
+    voiceConnecting: false,
+    voiceConnected: false,
+    voiceStatus: null,
+    voiceError: null,
+    voiceUserTranscript: null,
+    voiceAssistantTranscript: null,
+    voiceSessionKey: null,
+    voiceProvider: null,
+    voiceHandle: null,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  wsInstances.length = 0;
+  chatMocks.loadChatHistory.mockReset();
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("handleVoiceConnect", () => {
+  it("bootstraps browser voice with a ticket, updates transcripts, and refreshes shared history", async () => {
+    installBrowserVoiceGlobals();
+    const host = createHost();
+
+    await handleVoiceConnect(host as never);
+
+    expect(host.client.request).toHaveBeenCalledWith("voice.session.create", {
+      sessionKey: "main",
+    });
+    expect(wsInstances).toHaveLength(1);
+    const ws = wsInstances[0];
+    expect(ws?.url).toBe("ws://127.0.0.1:18789/voice/ws");
+
+    ws?.emitOpen();
+    expect(ws?.sent).toHaveLength(1);
+    expect(JSON.parse(String(ws?.sent[0]))).toEqual({ type: "start", ticket: "voice-ticket" });
+
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+        modelId: "gpt-4o-realtime-preview",
+      }),
+    );
+    expect(host.voiceConnecting).toBe(false);
+    expect(host.voiceConnected).toBe(true);
+    expect(host.voiceProvider).toBe("openai-realtime");
+    expect(host.voiceSessionKey).toBe("voice:browser:1");
+
+    ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "hello", final: true }));
+    ws?.emitMessage(
+      JSON.stringify({ type: "transcript", role: "assistant", text: "hi there", final: true }),
+    );
+    vi.advanceTimersByTime(181);
+    await Promise.resolve();
+
+    expect(host.voiceUserTranscript).toBe("hello");
+    expect(host.voiceAssistantTranscript).toBe("hi there");
+    expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(1);
+
+    handleVoiceInterrupt(host as never);
+    expect(
+      ws?.sent.some((entry) => typeof entry === "string" && JSON.parse(entry).type === "interrupt"),
+    ).toBe(true);
+
+    ws?.emitMessage(JSON.stringify({ type: "tool_result", name: "session_status" }));
+    vi.advanceTimersByTime(181);
+    await Promise.resolve();
+    expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(2);
+
+    await handleVoiceDisconnect(host as never);
+    expect(host.voiceConnected).toBe(false);
+    expect(host.voiceHandle).toBeNull();
+    expect(ws?.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  it("surfaces microphone permission failures", async () => {
+    installBrowserVoiceGlobals({
+      getUserMedia: vi.fn(async () => {
+        throw new Error("Permission denied");
+      }),
+    });
+    const host = createHost();
+
+    await handleVoiceConnect(host as never);
+
+    expect(host.voiceError).toBe("Permission denied");
+    expect(host.voiceConnecting).toBe(false);
+    expect(wsInstances).toHaveLength(0);
+  });
+
+  it("surfaces websocket transport errors", async () => {
+    installBrowserVoiceGlobals();
+    const host = createHost();
+
+    await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    ws?.emitError();
+
+    expect(host.voiceError).toBe("Voice transport error");
+
+    await handleVoiceDisconnect(host as never, { preserveError: true });
+    expect(host.voiceError).toBe("Voice transport error");
+  });
+});

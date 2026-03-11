@@ -1,6 +1,11 @@
 import type { ErrorObject } from "ajv";
 import { describe, expect, it } from "vitest";
-import { formatValidationErrors, validateTalkConfigResult } from "./index.js";
+import {
+  formatValidationErrors,
+  validateTalkConfigResult,
+  validateVoiceConfigResult,
+  validateVoiceSessionCreateResult,
+} from "./index.js";
 
 const makeError = (overrides: Partial<ErrorObject>): ErrorObject => ({
   keyword: "type",
@@ -115,5 +120,45 @@ describe("validateTalkConfigResult", () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe("voice protocol validators", () => {
+  it("accepts deprecations-only voice.config payloads", () => {
+    expect(
+      validateVoiceConfigResult({
+        config: {
+          voice: {
+            deprecations: ["legacy voice-call config is deprecated"],
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts voice.session.create bootstrap payloads", () => {
+    expect(
+      validateVoiceSessionCreateResult({
+        ticket: "ticket-123",
+        expiresAt: 1_234,
+        sessionKey: "voice:browser:test",
+        provider: "openai-realtime",
+        modelId: "gpt-4o-realtime-preview",
+        transport: {
+          wsPath: "/voice/ws",
+          sampleRateHz: 16_000,
+          channels: 1,
+          frameDurationMs: 20,
+        },
+        session: {
+          interruptOnSpeech: true,
+          pauseOnToolCall: true,
+          persistTranscripts: true,
+          transcriptSource: "provider",
+          sharedChatHistory: true,
+          sessionKeyPrefix: "voice",
+        },
+      }),
+    ).toBe(true);
   });
 });

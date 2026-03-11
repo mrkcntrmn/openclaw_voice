@@ -87,6 +87,60 @@ The Control UI can localize itself on first load based on your browser locale, a
 - Debug: status/health/models snapshots + event log + manual RPC calls (`status`, `health`, `models.list`)
 - Logs: live tail of gateway file logs with filter/export (`logs.tail`)
 - Update: run a package/git update + restart (`update.run`) with a restart report
+- Browser voice: realtime mic streaming via `voice.session.create` + `/voice/ws`, with provider-authored transcripts, interrupt, and shared chat history
+
+## Browser voice (MVP)
+
+Browser voice in the Control UI is the supported voice MVP.
+
+Flow:
+
+- The authenticated Control UI session calls `voice.session.create`.
+- The Gateway returns a short-lived one-time ticket plus browser transport metadata.
+- The browser opens `/voice/ws` and starts the session with `{ "type": "start", "ticket": "..." }`.
+- Audio streams as 16 kHz mono PCM16; provider transcripts are the source of truth.
+- Final user and assistant turns are appended to the normal shared chat history.
+
+Canonical config lives under top-level `voice`:
+
+```json5
+{
+  voice: {
+    provider: "openai-realtime",
+    providers: {
+      "openai-realtime": {
+        apiKey: "openai_api_key",
+        modelId: "gpt-4o-realtime-preview",
+      },
+      "google-gemini-live": {
+        apiKey: "gemini_api_key",
+        modelId: "gemini-2.0-flash-exp",
+      },
+    },
+    browser: {
+      enabled: true,
+      wsPath: "/voice/ws",
+      sampleRateHz: 16000,
+      channels: 1,
+      frameDurationMs: 20,
+    },
+    session: {
+      interruptOnSpeech: true,
+      pauseOnToolCall: true,
+      persistTranscripts: true,
+      sharedChatHistory: true,
+      transcriptSource: "provider",
+    },
+  },
+}
+```
+
+Notes:
+
+- `voice` is canonical. `talk` remains a backward-compatible input only.
+- The recommended browser flow does not send shared token/password in the `/voice/ws` start frame.
+- Raw auth on `/voice/ws` is a legacy compatibility/debug path and is not the supported browser bootstrap.
+- `plugins.entries.voice-call.config` is deprecated and ignored for browser voice.
 
 Cron jobs panel notes:
 

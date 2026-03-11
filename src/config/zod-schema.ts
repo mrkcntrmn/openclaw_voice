@@ -203,6 +203,136 @@ const TalkSchema = z
     }
   });
 
+const VoiceProviderEntrySchema = z
+  .object({
+    voiceId: z.string().optional(),
+    voiceAliases: z.record(z.string(), z.string()).optional(),
+    modelId: z.string().optional(),
+    outputFormat: z.string().optional(),
+    apiKey: SecretInputSchema.optional().register(sensitive),
+    websocketUrl: z.string().optional(),
+    apiVersion: z.string().optional(),
+    transcriptionModelId: z.string().optional(),
+    inputAudioFormat: z.string().optional(),
+    outputAudioFormat: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+  })
+  .catchall(z.unknown());
+
+const VoiceSchema = z
+  .object({
+    provider: z.string().optional(),
+    providers: z.record(z.string(), VoiceProviderEntrySchema).optional(),
+    browser: z
+      .object({
+        enabled: z.boolean().optional(),
+        wsPath: z.string().optional(),
+        sampleRateHz: z.number().int().positive().optional(),
+        channels: z.number().int().positive().optional(),
+        frameDurationMs: z.number().int().positive().optional(),
+        vad: z.union([z.literal("client"), z.literal("provider"), z.literal("server")]).optional(),
+        authTimeoutMs: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    session: z
+      .object({
+        interruptOnSpeech: z.boolean().optional(),
+        pauseOnToolCall: z.boolean().optional(),
+        persistTranscripts: z.boolean().optional(),
+        transcriptSource: z.literal("provider").optional(),
+        silenceTimeoutMs: z.number().int().positive().optional(),
+        sharedChatHistory: z.boolean().optional(),
+        sessionKeyPrefix: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    messaging: z
+      .object({
+        enabled: z.boolean().optional(),
+        ingest: z
+          .object({
+            enabled: z.boolean().optional(),
+            allowedMimes: z.array(z.string()).optional(),
+            targetSampleRateHz: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        walkieTalkie: z
+          .object({
+            enabled: z.boolean().optional(),
+            replyMimeType: z.string().optional(),
+            includeTranscript: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    channels: z
+      .object({
+        enabled: z.boolean().optional(),
+        vad: z
+          .object({
+            enabled: z.boolean().optional(),
+            provider: z.literal("server").optional(),
+            library: z.string().optional(),
+            threshold: z.number().min(0).max(1).optional(),
+            silenceDurationMs: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        integrations: z
+          .object({
+            discord: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+            telegram: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    deployment: z
+      .object({
+        ffmpeg: z
+          .object({
+            enabled: z.boolean().optional(),
+            binaryPath: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        websocket: z
+          .object({
+            maxSessionMinutes: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((voice, ctx) => {
+    const provider = voice.provider?.trim().toLowerCase();
+    const providers = voice.providers ? Object.keys(voice.providers) : [];
+
+    if (provider && providers.length > 0 && !(provider in voice.providers!)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["provider"],
+        message: `voice.provider must match a key in voice.providers (missing "${provider}")`,
+      });
+    }
+
+    if (!provider && providers.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["provider"],
+        message: "voice.provider is required when voice.providers defines multiple providers",
+      });
+    }
+  });
+
 export const OpenClawSchema = z
   .object({
     $schema: z.string().optional(),
@@ -618,6 +748,7 @@ export const OpenClawSchema = z
       .strict()
       .optional(),
     talk: TalkSchema.optional(),
+    voice: VoiceSchema.optional(),
     gateway: z
       .object({
         port: z.number().int().positive().optional(),

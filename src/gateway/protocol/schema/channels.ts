@@ -92,6 +92,247 @@ export const TalkConfigResultSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const VoiceConfigParamsSchema = Type.Object(
+  {
+    includeSecrets: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+
+const VoiceProviderConfigSchema = Type.Object(
+  {
+    voiceId: Type.Optional(Type.String()),
+    voiceAliases: Type.Optional(Type.Record(Type.String(), Type.String())),
+    modelId: Type.Optional(Type.String()),
+    outputFormat: Type.Optional(Type.String()),
+    apiKey: Type.Optional(SecretInputSchema),
+    websocketUrl: Type.Optional(Type.String()),
+    apiVersion: Type.Optional(Type.String()),
+    transcriptionModelId: Type.Optional(Type.String()),
+    inputAudioFormat: Type.Optional(Type.String()),
+    outputAudioFormat: Type.Optional(Type.String()),
+    headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+  },
+  { additionalProperties: true },
+);
+
+const ResolvedVoiceConfigSchema = Type.Object(
+  {
+    provider: Type.String(),
+    config: VoiceProviderConfigSchema,
+  },
+  { additionalProperties: false },
+);
+
+const VoiceBrowserConfigSchema = Type.Object(
+  {
+    enabled: Type.Optional(Type.Boolean()),
+    wsPath: Type.Optional(Type.String()),
+    sampleRateHz: Type.Optional(Type.Integer({ minimum: 1 })),
+    channels: Type.Optional(Type.Integer({ minimum: 1 })),
+    frameDurationMs: Type.Optional(Type.Integer({ minimum: 1 })),
+    vad: Type.Optional(Type.Union([Type.Literal("client"), Type.Literal("provider"), Type.Literal("server")])),
+    authTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+const VoiceSessionConfigSchema = Type.Object(
+  {
+    interruptOnSpeech: Type.Optional(Type.Boolean()),
+    pauseOnToolCall: Type.Optional(Type.Boolean()),
+    persistTranscripts: Type.Optional(Type.Boolean()),
+    transcriptSource: Type.Optional(Type.Literal("provider")),
+    silenceTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
+    sharedChatHistory: Type.Optional(Type.Boolean()),
+    sessionKeyPrefix: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+const VoiceMessagingConfigSchema = Type.Object(
+  {
+    enabled: Type.Optional(Type.Boolean()),
+    ingest: Type.Optional(
+      Type.Object(
+        {
+          enabled: Type.Optional(Type.Boolean()),
+          allowedMimes: Type.Optional(Type.Array(Type.String())),
+          targetSampleRateHz: Type.Optional(Type.Integer({ minimum: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    walkieTalkie: Type.Optional(
+      Type.Object(
+        {
+          enabled: Type.Optional(Type.Boolean()),
+          replyMimeType: Type.Optional(Type.String()),
+          includeTranscript: Type.Optional(Type.Boolean()),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const VoicePersistentChannelsConfigSchema = Type.Object(
+  {
+    enabled: Type.Optional(Type.Boolean()),
+    vad: Type.Optional(
+      Type.Object(
+        {
+          enabled: Type.Optional(Type.Boolean()),
+          provider: Type.Optional(Type.Literal("server")),
+          library: Type.Optional(Type.String()),
+          threshold: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+          silenceDurationMs: Type.Optional(Type.Integer({ minimum: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    integrations: Type.Optional(
+      Type.Object(
+        {
+          discord: Type.Optional(
+            Type.Object(
+              {
+                enabled: Type.Optional(Type.Boolean()),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+          telegram: Type.Optional(
+            Type.Object(
+              {
+                enabled: Type.Optional(Type.Boolean()),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const VoiceDeploymentConfigSchema = Type.Object(
+  {
+    ffmpeg: Type.Optional(
+      Type.Object(
+        {
+          enabled: Type.Optional(Type.Boolean()),
+          binaryPath: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    websocket: Type.Optional(
+      Type.Object(
+        {
+          maxSessionMinutes: Type.Optional(Type.Integer({ minimum: 1 })),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const VoiceConfigResponseSchema = Type.Object(
+  {
+    provider: Type.Optional(Type.String()),
+    providers: Type.Optional(Type.Record(Type.String(), VoiceProviderConfigSchema)),
+    browser: Type.Optional(VoiceBrowserConfigSchema),
+    session: Type.Optional(VoiceSessionConfigSchema),
+    messaging: Type.Optional(VoiceMessagingConfigSchema),
+    channels: Type.Optional(VoicePersistentChannelsConfigSchema),
+    deployment: Type.Optional(VoiceDeploymentConfigSchema),
+    resolved: Type.Optional(ResolvedVoiceConfigSchema),
+    deprecations: Type.Optional(Type.Array(Type.String())),
+  },
+  { additionalProperties: false },
+);
+
+export const VoiceConfigResultSchema = Type.Object(
+  {
+    config: Type.Object(
+      {
+        voice: Type.Optional(VoiceConfigResponseSchema),
+        session: Type.Optional(
+          Type.Object(
+            {
+              mainKey: Type.Optional(Type.String()),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+        ui: Type.Optional(
+          Type.Object(
+            {
+              seamColor: Type.Optional(Type.String()),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const VoiceSessionCreateParamsSchema = Type.Object(
+  {
+    provider: Type.Optional(Type.String()),
+    modelId: Type.Optional(Type.String()),
+    sessionKey: Type.Optional(Type.String()),
+    agentId: Type.Optional(Type.String()),
+    instructions: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+const VoiceSessionTransportSchema = Type.Object(
+  {
+    wsPath: Type.String(),
+    sampleRateHz: Type.Integer({ minimum: 1 }),
+    channels: Type.Integer({ minimum: 1 }),
+    frameDurationMs: Type.Integer({ minimum: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+const VoiceResolvedSessionSchema = Type.Object(
+  {
+    interruptOnSpeech: Type.Boolean(),
+    pauseOnToolCall: Type.Boolean(),
+    persistTranscripts: Type.Boolean(),
+    transcriptSource: Type.Literal("provider"),
+    silenceTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
+    sharedChatHistory: Type.Boolean(),
+    sessionKeyPrefix: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
+export const VoiceSessionCreateResultSchema = Type.Object(
+  {
+    ticket: Type.String(),
+    expiresAt: Type.Integer({ minimum: 0 }),
+    sessionKey: Type.String(),
+    provider: Type.String(),
+    modelId: Type.String(),
+    transport: VoiceSessionTransportSchema,
+    session: VoiceResolvedSessionSchema,
+    deprecations: Type.Optional(Type.Array(Type.String())),
+  },
+  { additionalProperties: false },
+);
+
 export const ChannelsStatusParamsSchema = Type.Object(
   {
     probe: Type.Optional(Type.Boolean()),

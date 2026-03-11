@@ -104,6 +104,44 @@ When validation fails:
 
   </Accordion>
 
+  <Accordion title="Enable browser voice in the Control UI">
+    Browser/dashboard voice now uses top-level `voice` as the canonical config surface.
+
+    ```json5
+    {
+      voice: {
+        provider: "openai-realtime",
+        providers: {
+          "openai-realtime": {
+            apiKey: "openai_api_key",
+            modelId: "gpt-4o-realtime-preview",
+          },
+        },
+        browser: {
+          enabled: true,
+          wsPath: "/voice/ws",
+          sampleRateHz: 16000,
+          channels: 1,
+          frameDurationMs: 20,
+        },
+        session: {
+          interruptOnSpeech: true,
+          pauseOnToolCall: true,
+          persistTranscripts: true,
+          sharedChatHistory: true,
+          transcriptSource: "provider",
+        },
+      },
+    }
+    ```
+
+    - The Control UI calls `voice.session.create`, then starts `/voice/ws` with a one-time ticket.
+    - Final provider transcripts are written into the same shared chat history as text chat.
+    - `talk` remains supported only as a backward-compatible input for legacy Talk clients.
+    - `plugins.entries.voice-call.config` is deprecated and does not configure browser voice.
+
+  </Accordion>
+
   <Accordion title="Choose and configure models">
     Set the primary model and optional fallbacks:
 
@@ -377,7 +415,7 @@ Most fields hot-apply without downtime. In `hybrid` mode, restart-required chang
 | Agent & models      | `agent`, `agents`, `models`, `routing`                               | No              |
 | Automation          | `hooks`, `cron`, `agent.heartbeat`                                   | No              |
 | Sessions & messages | `session`, `messages`                                                | No              |
-| Tools & media       | `tools`, `browser`, `skills`, `audio`, `talk`                        | No              |
+| Tools & media       | `tools`, `browser`, `skills`, `audio`, `voice`, `talk`               | No              |
 | UI & misc           | `ui`, `logging`, `identity`, `bindings`                              | No              |
 | Gateway server      | `gateway.*` (port, bind, auth, tailscale, TLS, HTTP)                 | **Yes**         |
 | Infrastructure      | `discovery`, `canvasHost`, `plugins`                                 | **Yes**         |

@@ -12,6 +12,7 @@ import type {
   DiscoveryConfig,
   GatewayConfig,
   TalkConfig,
+  VoiceConfig,
 } from "./types.gateway.js";
 import type { HooksConfig } from "./types.hooks.js";
 import type { MemoryConfig } from "./types.memory.js";
@@ -118,6 +119,7 @@ export type OpenClawConfig = {
   discovery?: DiscoveryConfig;
   canvasHost?: CanvasHostConfig;
   talk?: TalkConfig;
+  voice?: VoiceConfig;
   gateway?: GatewayConfig;
   memory?: MemoryConfig;
 };

@@ -30,6 +30,12 @@ import {
 } from "./app-lifecycle.ts";
 import { renderApp } from "./app-render.ts";
 import {
+  handleVoiceConnect as handleVoiceConnectInternal,
+  handleVoiceDisconnect as handleVoiceDisconnectInternal,
+  handleVoiceInterrupt as handleVoiceInterruptInternal,
+  type VoiceSessionHandle,
+} from "./controllers/voice.ts";
+import {
   exportLogs as exportLogsInternal,
   handleChatScroll as handleChatScrollInternal,
   handleLogsScroll as handleLogsScrollInternal,
@@ -155,6 +161,19 @@ export class OpenClawApp extends LitElement {
   @state() chatQueue: ChatQueueItem[] = [];
   @state() chatAttachments: ChatAttachment[] = [];
   @state() chatManualRefreshInFlight = false;
+  @state() voiceSupported =
+    typeof navigator !== "undefined" &&
+    Boolean(navigator.mediaDevices?.getUserMedia) &&
+    typeof AudioContext !== "undefined" &&
+    typeof AudioWorkletNode !== "undefined";
+  @state() voiceConnecting = false;
+  @state() voiceConnected = false;
+  @state() voiceStatus: string | null = null;
+  @state() voiceError: string | null = null;
+  @state() voiceUserTranscript: string | null = null;
+  @state() voiceAssistantTranscript: string | null = null;
+  @state() voiceSessionKey: string | null = null;
+  @state() voiceProvider: string | null = null;
   // Sidebar state for tool output viewing
   @state() sidebarOpen = false;
   @state() sidebarContent: string | null = null;
@@ -379,6 +398,7 @@ export class OpenClawApp extends LitElement {
   @state() logsAtBottom = true;
 
   client: GatewayBrowserClient | null = null;
+  voiceHandle: VoiceSessionHandle | null = null;
   private chatScrollFrame: number | null = null;
   private chatScrollTimeout: number | null = null;
   private chatHasAutoScrolled = false;
@@ -505,6 +525,25 @@ export class OpenClawApp extends LitElement {
     );
   }
 
+  async handleVoiceConnect() {
+    await handleVoiceConnectInternal(
+      this as unknown as Parameters<typeof handleVoiceConnectInternal>[0],
+    );
+  }
+
+  async handleVoiceDisconnect(opts?: { preserveError?: boolean }) {
+    await handleVoiceDisconnectInternal(
+      this as unknown as Parameters<typeof handleVoiceDisconnectInternal>[0],
+      opts,
+    );
+  }
+
+  handleVoiceInterrupt() {
+    handleVoiceInterruptInternal(
+      this as unknown as Parameters<typeof handleVoiceInterruptInternal>[0],
+    );
+  }
+
   async handleWhatsAppStart(force: boolean) {
     await handleWhatsAppStartInternal(this, force);
   }
@@ -627,3 +666,7 @@ export class OpenClawApp extends LitElement {
     return renderApp(this as unknown as AppViewState);
   }
 }
+
+
+
+

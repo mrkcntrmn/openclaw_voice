@@ -9,6 +9,7 @@ import type {
 } from "./types.gateway.js";
 import type { OpenClawConfig } from "./types.js";
 import { coerceSecretRef } from "./types.secrets.js";
+import { buildTalkInputFromVoiceConfig } from "./voice.js";
 
 type TalkApiKeyDeps = {
   fs?: typeof fs;
@@ -339,6 +340,12 @@ export function readTalkApiKeyFromProfile(deps: TalkApiKeyDeps = {}): string | n
     }
   }
   return null;
+}
+
+export function buildTalkConfigResponseFromConfig(
+  config: Pick<OpenClawConfig, "talk" | "voice">,
+): TalkConfigResponse | undefined {
+  return buildTalkConfigResponse(config.talk ?? buildTalkInputFromVoiceConfig(config.voice));
 }
 
 export function resolveTalkApiKey(

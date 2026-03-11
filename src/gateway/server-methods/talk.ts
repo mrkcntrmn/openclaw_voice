@@ -1,6 +1,6 @@
 import { readConfigFileSnapshot } from "../../config/config.js";
 import { redactConfigObject } from "../../config/redact-snapshot.js";
-import { buildTalkConfigResponse } from "../../config/talk.js";
+import { buildTalkConfigResponseFromConfig } from "../../config/talk.js";
 import {
   ErrorCodes,
   errorShape,
@@ -45,10 +45,8 @@ export const talkHandlers: GatewayRequestHandlers = {
     const snapshot = await readConfigFileSnapshot();
     const configPayload: Record<string, unknown> = {};
 
-    const talkSource = includeSecrets
-      ? snapshot.config.talk
-      : redactConfigObject(snapshot.config.talk);
-    const talk = buildTalkConfigResponse(talkSource);
+    const configSource = includeSecrets ? snapshot.config : redactConfigObject(snapshot.config);
+    const talk = buildTalkConfigResponseFromConfig(configSource as typeof snapshot.config);
     if (talk) {
       configPayload.talk = talk;
     }

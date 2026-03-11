@@ -479,3 +479,107 @@
     min-width: 120px;
   }
 }
+
+.voice-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+}
+
+.voice-panel--active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.voice-panel__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.voice-panel__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.voice-panel__status {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.voice-panel__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.voice-panel__transcripts {
+  display: grid;
+  gap: 8px;
+}
+
+.voice-panel__transcript {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.voice-panel__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.voice-panel__text {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.voice-panel__hint,
+.voice-panel__error {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.voice-panel__error {
+  color: #fca5a5;
+}
+
+:root[data-theme="light"] .voice-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96));
+  border-color: rgba(16, 24, 40, 0.12);
+}
+
+:root[data-theme="light"] .voice-panel__transcript {
+  background: rgba(248, 250, 252, 0.9);
+  border-color: rgba(16, 24, 40, 0.08);
+}
+
+:root[data-theme="light"] .voice-panel__error {
+  color: #b42318;
+}
+
+@media (max-width: 640px) {
+  .voice-panel__actions {
+    width: 100%;
+  }
+
+  .voice-panel__actions .btn {
+    flex: 1 1 0;
+  }
+}

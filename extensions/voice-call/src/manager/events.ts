@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { isAllowlistedCaller, normalizePhoneNumber } from "../allowlist.js";
+import { resolveVoiceCallSessionKey } from "../../../src/voice/session-key.js";
 import type { CallRecord, CallState, NormalizedEvent } from "../types.js";
 import type { CallManagerContext } from "./context.js";
 import { findCall } from "./lookup.js";
@@ -76,6 +77,11 @@ function createWebhookCall(params: {
     state: "ringing",
     from: params.from,
     to: params.to,
+    sessionKey: resolveVoiceCallSessionKey({
+      direction: params.direction,
+      from: params.from,
+      to: params.to,
+    }),
     startedAt: Date.now(),
     transcript: [],
     processedEventIds: [],

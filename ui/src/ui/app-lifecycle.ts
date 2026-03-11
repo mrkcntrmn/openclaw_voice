@@ -22,6 +22,7 @@ import type { Tab } from "./navigation.ts";
 type LifecycleHost = {
   basePath: string;
   client?: { stop: () => void } | null;
+  handleVoiceDisconnect: (opts?: { preserveError?: boolean }) => Promise<void>;
   connectGeneration: number;
   connected?: boolean;
   tab: Tab;
@@ -78,6 +79,7 @@ export function handleDisconnected(host: LifecycleHost) {
   stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
   host.client?.stop();
   host.client = null;
+  void host.handleVoiceDisconnect();
   host.connected = false;
   detachThemeListener(host as unknown as Parameters<typeof detachThemeListener>[0]);
   host.topbarObserver?.disconnect();
@@ -116,3 +118,5 @@ export function handleUpdated(host: LifecycleHost, changed: Map<PropertyKey, unk
     }
   }
 }
+
+

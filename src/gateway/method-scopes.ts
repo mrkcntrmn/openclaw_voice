@@ -83,6 +83,8 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "config.get",
     "config.schema.lookup",
     "talk.config",
+    "voice.config",
+    "voice.session.create",
     "agents.files.list",
     "agents.files.get",
   ],

@@ -54,6 +54,13 @@ export type ChatProps = {
   disabledReason: string | null;
   error: string | null;
   sessions: SessionsListResult | null;
+  voiceSupported: boolean;
+  voiceConnecting: boolean;
+  voiceConnected: boolean;
+  voiceStatus: string | null;
+  voiceError: string | null;
+  voiceUserTranscript: string | null;
+  voiceAssistantTranscript: string | null;
   // Focus mode
   focusMode: boolean;
   // Sidebar state
@@ -75,6 +82,9 @@ export type ChatProps = {
   onDraftChange: (next: string) => void;
   onSend: () => void;
   onAbort?: () => void;
+  onVoiceConnect: () => void;
+  onVoiceDisconnect: () => void;
+  onVoiceInterrupt: () => void;
   onQueueRemove: (id: string) => void;
   onNewSession: () => void;
   onOpenSidebar?: (content: string) => void;
@@ -238,6 +248,66 @@ function renderAttachmentPreview(props: ChatProps) {
   `;
 }
 
+function renderVoicePanel(props: ChatProps) {
+  const status = props.voiceStatus ?? (props.voiceConnected ? "Listening" : "Idle");
+  const canStart = props.connected && props.voiceSupported && !props.voiceConnected && !props.voiceConnecting;
+  const canDisconnect = props.voiceConnected || props.voiceConnecting;
+  const canInterrupt = props.voiceConnected;
+
+  return html`
+    <div class="voice-panel ${props.voiceConnected ? "voice-panel--active" : ""}">
+      <div class="voice-panel__summary">
+        <div>
+          <div class="voice-panel__eyebrow">Voice</div>
+          <div class="voice-panel__status">${status}</div>
+        </div>
+        <div class="voice-panel__actions">
+          <button
+            class="btn ${props.voiceConnected ? "" : "primary"}"
+            type="button"
+            ?disabled=${!canStart}
+            @click=${props.onVoiceConnect}
+          >
+            ${props.voiceConnecting ? "Starting…" : "Start voice"}
+          </button>
+          <button
+            class="btn"
+            type="button"
+            ?disabled=${!canDisconnect}
+            @click=${props.onVoiceDisconnect}
+          >
+            Disconnect
+          </button>
+          <button
+            class="btn"
+            type="button"
+            ?disabled=${!canInterrupt}
+            @click=${props.onVoiceInterrupt}
+          >
+            Interrupt
+          </button>
+        </div>
+      </div>
+      <div class="voice-panel__transcripts">
+        <div class="voice-panel__transcript">
+          <span class="voice-panel__label">You</span>
+          <span class="voice-panel__text">${props.voiceUserTranscript ?? "Waiting for speech…"}</span>
+        </div>
+        <div class="voice-panel__transcript">
+          <span class="voice-panel__label">Assistant</span>
+          <span class="voice-panel__text">${props.voiceAssistantTranscript ?? "No reply yet."}</span>
+        </div>
+      </div>
+      ${
+        !props.voiceSupported
+          ? html`<div class="voice-panel__hint">Browser voice requires microphone access, Web Audio, and AudioWorklet support.</div>`
+          : nothing
+      }
+      ${props.voiceError ? html`<div class="voice-panel__error">${props.voiceError}</div>` : nothing}
+    </div>
+  `;
+}
+
 export function renderChat(props: ChatProps) {
   const canCompose = props.connected;
   const isBusy = props.sending || props.stream !== null;
@@ -320,6 +390,8 @@ export function renderChat(props: ChatProps) {
       ${props.disabledReason ? html`<div class="callout">${props.disabledReason}</div>` : nothing}
 
       ${props.error ? html`<div class="callout danger">${props.error}</div>` : nothing}
+
+      ${renderVoicePanel(props)}
 
       ${
         props.focusMode
@@ -634,3 +706,7 @@ function messageKey(message: unknown, index: number): string {
   }
   return `msg:${role}:${index}`;
 }
+
+
+
+
