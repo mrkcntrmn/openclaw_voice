@@ -4,5 +4,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [ ] **Track: Implement browser real-time voice chat in the OpenClaw dashboard chat**
+- [x] **Track: Implement browser real-time voice chat in the OpenClaw dashboard chat**
   *Link: [./tracks/browser_realtime_voice_20260311/](./tracks/browser_realtime_voice_20260311/)*
