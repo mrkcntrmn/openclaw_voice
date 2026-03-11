@@ -14,6 +14,7 @@ import type { ChatItem, MessageGroup } from "../types/chat-types.ts";
 import type { ChatAttachment, ChatQueueItem } from "../ui-types.ts";
 import { renderMarkdownSidebar } from "./markdown-sidebar.ts";
 import "../components/resizable-divider.ts";
+import "../components/voice-activity-indicator.ts";
 
 export type CompactionIndicatorStatus = {
   active: boolean;
@@ -66,6 +67,7 @@ export type ChatProps = {
   voiceError: string | null;
   voiceUserTranscript: string | null;
   voiceAssistantTranscript: string | null;
+  voiceVolume: number;
   // Focus mode
   focusMode: boolean;
   // Sidebar state
@@ -281,6 +283,10 @@ function renderVoicePanel(props: ChatProps) {
           <div class="voice-panel__eyebrow">
             Voice
             ${providerLabel ? html`<span class="voice-panel__provider">${providerLabel}</span>` : nothing}
+            <voice-activity-indicator
+              .volume=${props.voiceVolume}
+              ?active=${props.voiceConnected}
+            ></voice-activity-indicator>
           </div>
           <div class="voice-panel__status">${status}</div>
         </div>
@@ -726,7 +732,3 @@ function messageKey(message: unknown, index: number): string {
   }
   return `msg:${role}:${index}`;
 }
-
-
-
-

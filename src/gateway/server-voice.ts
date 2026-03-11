@@ -20,27 +20,14 @@ import {
 } from "../voice/runtime.js";
 import type { VoiceSessionTicketStore } from "../voice/session-ticket.js";
 import WebSocket, { type WebSocketServer } from "ws";
+import {
+  type VoiceWsClientFrame,
+  validateVoiceWsClientFrame,
+  formatValidationErrors,
+} from "./protocol/index.js";
 
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
 const MAX_AUDIO_FRAME_BYTES = 128_000;
-
-type VoiceStartFrame = {
-  type: "start";
-  ticket?: string;
-  auth?: { token?: string; password?: string };
-  sessionKey?: string;
-  provider?: string;
-  modelId?: string;
-  instructions?: string;
-  agentId?: string;
-};
-
-type VoiceControlFrame =
-  | VoiceStartFrame
-  | { type: "interrupt" }
-  | { type: "stop" }
-  | { type: "text"; text?: string }
-  | { type: "ping" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,10 +41,13 @@ function normalizeString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseControlFrame(raw: string): VoiceControlFrame | null {
+function parseControlFrame(raw: string): VoiceWsClientFrame | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return isRecord(parsed) && typeof parsed.type === "string" ? (parsed as VoiceControlFrame) : null;
+    if (validateVoiceWsClientFrame(parsed)) {
+      return parsed;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -162,6 +152,19 @@ async function handleVoiceConnection(params: {
         }
         const frame = parseControlFrame(typeof data === "string" ? data : data.toString());
         if (!frame || frame.type !== "start") {
+          if (!frame && (typeof data === "string" || Buffer.isBuffer(data))) {
+            const raw = typeof data === "string" ? data : data.toString();
+            try {
+              const parsed = JSON.parse(raw);
+              validateVoiceWsClientFrame(parsed);
+              if (validateVoiceWsClientFrame.errors) {
+                closeWithError(params.ws, 4400, `invalid voice start frame: ${formatValidationErrors(validateVoiceWsClientFrame.errors)}`);
+                return;
+              }
+            } catch {
+              // Not JSON, fall through.
+            }
+          }
           closeWithError(params.ws, 4400, "expected voice start frame");
           return;
         }
@@ -247,6 +250,22 @@ async function handleVoiceConnection(params: {
       }
       const frame = parseControlFrame(typeof data === "string" ? data : data.toString());
       if (!frame) {
+        if (typeof data === "string" || Buffer.isBuffer(data)) {
+          const raw = typeof data === "string" ? data : data.toString();
+          try {
+            const parsed = JSON.parse(raw);
+            validateVoiceWsClientFrame(parsed);
+            if (validateVoiceWsClientFrame.errors) {
+              sendJson(params.ws, {
+                type: "error",
+                message: `invalid voice control frame: ${formatValidationErrors(validateVoiceWsClientFrame.errors)}`,
+              });
+              return;
+            }
+          } catch {
+            // Not JSON, fall through.
+          }
+        }
         sendJson(params.ws, { type: "error", message: "invalid voice control frame" });
         return;
       }

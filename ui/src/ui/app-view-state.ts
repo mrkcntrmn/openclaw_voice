@@ -81,6 +81,7 @@ export type AppViewState = {
   voiceAssistantTranscript: string | null;
   voiceSessionKey: string | null;
   voiceProvider: string | null;
+  voiceVolume: number;
   nodesLoading: boolean;
   nodes: Array<Record<string, unknown>>;
   chatNewMessagesBelow: boolean;

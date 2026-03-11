@@ -56,6 +56,10 @@ import {
   VoiceSessionCreateParamsSchema,
   type VoiceSessionCreateResult,
   VoiceSessionCreateResultSchema,
+  type VoiceWsClientFrame,
+  VoiceWsClientFrameSchema,
+  type VoiceWsServerFrame,
+  VoiceWsServerFrameSchema,
   type ChannelsStatusParams,
   ChannelsStatusParamsSchema,
   type ChannelsStatusResult,
@@ -370,6 +374,8 @@ export const validateVoiceSessionCreateParams = ajv.compile<VoiceSessionCreatePa
 export const validateVoiceSessionCreateResult = ajv.compile<VoiceSessionCreateResult>(
   VoiceSessionCreateResultSchema,
 );
+export const validateVoiceWsClientFrame = ajv.compile<VoiceWsClientFrame>(VoiceWsClientFrameSchema);
+export const validateVoiceWsServerFrame = ajv.compile<VoiceWsServerFrame>(VoiceWsServerFrameSchema);
 export const validateChannelsStatusParams = ajv.compile<ChannelsStatusParams>(
   ChannelsStatusParamsSchema,
 );
@@ -628,6 +634,8 @@ export type {
   VoiceConfigResult,
   VoiceSessionCreateParams,
   VoiceSessionCreateResult,
+  VoiceWsClientFrame,
+  VoiceWsServerFrame,
   TalkModeParams,
   ChannelsStatusParams,
   ChannelsStatusResult,

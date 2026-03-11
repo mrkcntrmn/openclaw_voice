@@ -85,8 +85,11 @@ export default defineConfig({
       "ui/src/ui/views/agents-utils.test.ts",
       "ui/src/ui/views/usage-render-details.test.ts",
       "ui/src/ui/controllers/agents.test.ts",
+      "ui/src/ui/controllers/audio-capture.test.ts",
+      "ui/src/ui/controllers/audio-playback.test.ts",
       "ui/src/ui/controllers/chat.test.ts",
       "ui/src/ui/controllers/voice.test.ts",
+      "ui/src/ui/components/voice-activity-indicator.test.ts",
     ],
     setupFiles: ["test/setup.ts"],
     exclude: [

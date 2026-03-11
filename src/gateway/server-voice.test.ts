@@ -571,6 +571,32 @@ describe("gateway browser voice", () => {
     }
   });
 
+  it("returns detailed validation errors for invalid control frames", async () => {
+    const bootstrap = await rpcReq<{ ticket?: string }>(startedServer.ws, "voice.session.create", {});
+    expect(bootstrap.ok).toBe(true);
+
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      voiceWs.send(JSON.stringify({ type: "start", ticket: bootstrap.payload?.ticket }));
+      await onceMessage(voiceWs, (message) => message.type === "ready");
+
+      const errorPromise = onceMessage<{ type?: string; message?: string }>(
+        voiceWs,
+        (message) => message.type === "error",
+      );
+      // 'interrupt' type doesn't allow 'extra' property
+      voiceWs.send(JSON.stringify({ type: "interrupt", extra: "not allowed" }));
+
+      const error = await errorPromise;
+      expect(error.message).toContain("invalid voice control frame");
+      expect(error.message).toContain("unexpected property 'extra'");
+    } finally {
+      if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {
+        voiceWs.close();
+      }
+    }
+  });
+
   it("responds to ping control frames after the voice session starts", async () => {
     const bootstrap = await rpcReq<{ ticket?: string }>(startedServer.ws, "voice.session.create", {});
     expect(bootstrap.ok).toBe(true);

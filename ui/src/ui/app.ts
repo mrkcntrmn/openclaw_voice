@@ -179,6 +179,7 @@ export class OpenClawApp extends LitElement {
   @state() voiceAssistantTranscript: string | null = null;
   @state() voiceSessionKey: string | null = null;
   @state() voiceProvider: string | null = null;
+  @state() voiceVolume = 0;
   // Sidebar state for tool output viewing
   @state() sidebarOpen = false;
   @state() sidebarContent: string | null = null;
