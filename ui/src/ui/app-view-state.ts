@@ -68,6 +68,11 @@ export type AppViewState = {
   chatQueue: ChatQueueItem[];
   chatManualRefreshInFlight: boolean;
   voiceSupported: boolean;
+  voiceAvailable: boolean;
+  voiceAvailabilityReason: string | null;
+  voiceConfigLoading: boolean;
+  voiceConfigProvider: string | null;
+  voiceDeprecations: string[];
   voiceConnecting: boolean;
   voiceConnected: boolean;
   voiceStatus: string | null;

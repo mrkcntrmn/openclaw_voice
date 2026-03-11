@@ -55,6 +55,11 @@ export type ChatProps = {
   error: string | null;
   sessions: SessionsListResult | null;
   voiceSupported: boolean;
+  voiceAvailable: boolean;
+  voiceAvailabilityReason: string | null;
+  voiceConfigLoading: boolean;
+  voiceConfigProvider: string | null;
+  voiceDeprecations: string[];
   voiceConnecting: boolean;
   voiceConnected: boolean;
   voiceStatus: string | null;
@@ -249,16 +254,34 @@ function renderAttachmentPreview(props: ChatProps) {
 }
 
 function renderVoicePanel(props: ChatProps) {
-  const status = props.voiceStatus ?? (props.voiceConnected ? "Listening" : "Idle");
-  const canStart = props.connected && props.voiceSupported && !props.voiceConnected && !props.voiceConnecting;
+  const providerLabel = props.voiceProvider ?? props.voiceConfigProvider;
+  const status = props.voiceStatus ?? (props.voiceConfigLoading ? "Checking config" : props.voiceConnected ? "Listening" : "Idle");
+  const canStart =
+    props.connected &&
+    props.voiceSupported &&
+    props.voiceAvailable &&
+    !props.voiceConfigLoading &&
+    !props.voiceConnected &&
+    !props.voiceConnecting;
   const canDisconnect = props.voiceConnected || props.voiceConnecting;
   const canInterrupt = props.voiceConnected;
+  const availabilityHint =
+    !props.connected
+      ? "Connect to the gateway before starting voice."
+      : !props.voiceSupported
+        ? "Browser voice requires microphone access, Web Audio, and AudioWorklet support."
+        : props.voiceConfigLoading
+          ? "Checking browser voice config…"
+          : props.voiceAvailabilityReason;
 
   return html`
     <div class="voice-panel ${props.voiceConnected ? "voice-panel--active" : ""}">
       <div class="voice-panel__summary">
         <div>
-          <div class="voice-panel__eyebrow">Voice</div>
+          <div class="voice-panel__eyebrow">
+            Voice
+            ${providerLabel ? html`<span class="voice-panel__provider">${providerLabel}</span>` : nothing}
+          </div>
           <div class="voice-panel__status">${status}</div>
         </div>
         <div class="voice-panel__actions">
@@ -268,7 +291,7 @@ function renderVoicePanel(props: ChatProps) {
             ?disabled=${!canStart}
             @click=${props.onVoiceConnect}
           >
-            ${props.voiceConnecting ? "Starting…" : "Start voice"}
+            ${props.voiceConfigLoading ? "Checking…" : props.voiceConnecting ? "Starting…" : "Start voice"}
           </button>
           <button
             class="btn"
@@ -298,11 +321,8 @@ function renderVoicePanel(props: ChatProps) {
           <span class="voice-panel__text">${props.voiceAssistantTranscript ?? "No reply yet."}</span>
         </div>
       </div>
-      ${
-        !props.voiceSupported
-          ? html`<div class="voice-panel__hint">Browser voice requires microphone access, Web Audio, and AudioWorklet support.</div>`
-          : nothing
-      }
+      ${availabilityHint ? html`<div class="voice-panel__hint">${availabilityHint}</div>` : nothing}
+      ${props.voiceDeprecations.map((warning) => html`<div class="voice-panel__warning">${warning}</div>`)}
       ${props.voiceError ? html`<div class="voice-panel__error">${props.voiceError}</div>` : nothing}
     </div>
   `;

@@ -19,6 +19,7 @@ import { loadAssistantIdentity } from "./controllers/assistant-identity.ts";
 import { loadChatHistory } from "./controllers/chat.ts";
 import { handleChatEvent, type ChatEventPayload } from "./controllers/chat.ts";
 import { loadDevices } from "./controllers/devices.ts";
+import { refreshVoiceConfig } from "./controllers/voice.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import {
   addExecApproval,
@@ -95,6 +96,11 @@ type GatewayHost = {
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalError: string | null;
   updateAvailable: UpdateAvailable | null;
+  voiceAvailable: boolean;
+  voiceAvailabilityReason: string | null;
+  voiceConfigLoading: boolean;
+  voiceConfigProvider: string | null;
+  voiceDeprecations: string[];
   handleVoiceDisconnect: (opts?: { preserveError?: boolean }) => Promise<void>;
 };
 
@@ -191,6 +197,11 @@ export function connectGateway(host: GatewayHost) {
   host.connected = false;
   host.execApprovalQueue = [];
   host.execApprovalError = null;
+  host.voiceAvailable = false;
+  host.voiceAvailabilityReason = null;
+  host.voiceConfigLoading = false;
+  host.voiceConfigProvider = null;
+  host.voiceDeprecations = [];
   void host.handleVoiceDisconnect();
 
   const previousClient = host.client;
@@ -214,6 +225,11 @@ export function connectGateway(host: GatewayHost) {
       host.lastError = null;
       host.lastErrorCode = null;
       host.hello = hello;
+      host.voiceAvailable = false;
+      host.voiceAvailabilityReason = null;
+      host.voiceConfigLoading = true;
+      host.voiceConfigProvider = null;
+      host.voiceDeprecations = [];
       applySnapshot(host, hello);
       // Reset orphaned chat run state from before disconnect.
       // Any in-flight run's final event was lost during the disconnect window.
@@ -226,6 +242,7 @@ export function connectGateway(host: GatewayHost) {
       void loadToolsCatalog(host as unknown as OpenClawApp);
       void loadNodes(host as unknown as OpenClawApp, { quiet: true });
       void loadDevices(host as unknown as OpenClawApp, { quiet: true });
+      void refreshVoiceConfig(host as unknown as Parameters<typeof refreshVoiceConfig>[0]);
       void refreshActiveTab(host as unknown as Parameters<typeof refreshActiveTab>[0]);
     },
     onClose: ({ code, reason, error }) => {
@@ -233,6 +250,7 @@ export function connectGateway(host: GatewayHost) {
         return;
       }
       host.connected = false;
+      host.voiceConfigLoading = false;
       void host.handleVoiceDisconnect();
       // Code 1012 = Service Restart (expected during config saves, don't show as error)
       host.lastErrorCode =

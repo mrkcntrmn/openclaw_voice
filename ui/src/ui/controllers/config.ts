@@ -1,4 +1,5 @@
 import type { GatewayBrowserClient } from "../gateway.ts";
+import { refreshVoiceConfig } from "./voice.ts";
 import type { ConfigSchemaResponse, ConfigSnapshot, ConfigUiHints } from "../types.ts";
 import type { JsonSchema } from "../views/config-form.shared.ts";
 import { coerceFormValues } from "./config/form-coerce.ts";
@@ -34,6 +35,11 @@ export type ConfigState = {
   configActiveSection: string | null;
   configActiveSubsection: string | null;
   lastError: string | null;
+  voiceAvailable: boolean;
+  voiceAvailabilityReason: string | null;
+  voiceConfigLoading: boolean;
+  voiceConfigProvider: string | null;
+  voiceDeprecations: string[];
 };
 
 export async function loadConfig(state: ConfigState) {
@@ -170,6 +176,7 @@ export async function applyConfig(state: ConfigState) {
     });
     state.configFormDirty = false;
     await loadConfig(state);
+    await refreshVoiceConfig(state as unknown as Parameters<typeof refreshVoiceConfig>[0]);
   } catch (err) {
     state.lastError = String(err);
   } finally {

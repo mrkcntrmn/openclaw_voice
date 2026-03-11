@@ -8,7 +8,12 @@ vi.mock("./chat.ts", () => ({
   loadChatHistory: chatMocks.loadChatHistory,
 }));
 
-import { handleVoiceConnect, handleVoiceDisconnect, handleVoiceInterrupt } from "./voice.ts";
+import {
+  handleVoiceConnect,
+  handleVoiceDisconnect,
+  handleVoiceInterrupt,
+  refreshVoiceConfig,
+} from "./voice.ts";
 
 const wsInstances: FakeWebSocket[] = [];
 
@@ -179,23 +184,28 @@ function installBrowserVoiceGlobals(params?: {
   vi.stubGlobal("URL", FakeURL);
 }
 
+function createBootstrapResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    ticket: "voice-ticket",
+    sessionKey: "voice:browser:1",
+    provider: "openai-realtime",
+    modelId: "gpt-4o-realtime-preview",
+    transport: {
+      wsPath: "/voice/ws",
+      sampleRateHz: 16000,
+      channels: 1,
+      frameDurationMs: 20,
+    },
+    ...overrides,
+  };
+}
+
 function createHost(overrides: Record<string, unknown> = {}) {
   return {
     settings: { gatewayUrl: "http://127.0.0.1:18789" },
     password: "",
     client: {
-      request: vi.fn(async () => ({
-        ticket: "voice-ticket",
-        sessionKey: "voice:browser:1",
-        provider: "openai-realtime",
-        modelId: "gpt-4o-realtime-preview",
-        transport: {
-          wsPath: "/voice/ws",
-          sampleRateHz: 16000,
-          channels: 1,
-          frameDurationMs: 20,
-        },
-      })),
+      request: vi.fn(async () => createBootstrapResponse()),
     },
     connected: true,
     sessionKey: "main",
@@ -207,6 +217,11 @@ function createHost(overrides: Record<string, unknown> = {}) {
     chatStreamStartedAt: null,
     lastError: null,
     voiceSupported: false,
+    voiceAvailable: true,
+    voiceAvailabilityReason: null,
+    voiceConfigLoading: false,
+    voiceConfigProvider: null,
+    voiceDeprecations: [],
     voiceConnecting: false,
     voiceConnected: false,
     voiceStatus: null,
@@ -228,6 +243,67 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("refreshVoiceConfig", () => {
+  it("caches browser voice availability, provider, and deprecations", async () => {
+    const host = createHost({
+      client: {
+        request: vi.fn(async () => ({
+          config: {
+            voice: {
+              provider: "openai-realtime",
+              resolved: { provider: "openai-realtime" },
+              browser: {
+                enabled: true,
+                channels: 1,
+                vad: "provider",
+              },
+              session: {
+                sharedChatHistory: true,
+              },
+              deprecations: ["plugins.entries.voice-call.config is deprecated"],
+            },
+          },
+        })),
+      },
+    });
+
+    await refreshVoiceConfig(host as never);
+
+    expect(host.voiceAvailable).toBe(true);
+    expect(host.voiceAvailabilityReason).toBeNull();
+    expect(host.voiceConfigProvider).toBe("openai-realtime");
+    expect(host.voiceDeprecations).toEqual(["plugins.entries.voice-call.config is deprecated"]);
+    expect(host.voiceConfigLoading).toBe(false);
+  });
+
+  it("stores the exact browser voice unavailability reason from voice.config", async () => {
+    const host = createHost({
+      client: {
+        request: vi.fn(async () => ({
+          config: {
+            voice: {
+              provider: "openai-realtime",
+              browser: {
+                enabled: false,
+              },
+              deprecations: ["legacy warning"],
+            },
+          },
+        })),
+      },
+    });
+
+    await refreshVoiceConfig(host as never);
+
+    expect(host.voiceAvailable).toBe(false);
+    expect(host.voiceAvailabilityReason).toBe("Browser voice is disabled in the current gateway config.");
+    expect(host.voiceConfigProvider).toBe("openai-realtime");
+    expect(host.voiceDeprecations).toEqual(["legacy warning"]);
+    expect(host.voiceConfigLoading).toBe(false);
+  });
 });
 
 describe("handleVoiceConnect", () => {
@@ -288,6 +364,61 @@ describe("handleVoiceConnect", () => {
     expect(ws?.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
+  it("boots the voice session before requesting microphone access", async () => {
+    const getUserMedia = vi.fn(async () => new FakeMediaStream());
+    installBrowserVoiceGlobals({ getUserMedia });
+    const host = createHost({
+      client: {
+        request: vi.fn(async () => {
+          throw new Error("voice bootstrap failed");
+        }),
+      },
+    });
+
+    await handleVoiceConnect(host as never);
+
+    expect(host.client.request).toHaveBeenCalledWith("voice.session.create", {
+      sessionKey: "main",
+    });
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(host.voiceError).toBe("voice bootstrap failed");
+    expect(wsInstances).toHaveLength(0);
+  });
+
+  it("blocks connect when browser voice is unavailable", async () => {
+    const getUserMedia = vi.fn(async () => new FakeMediaStream());
+    installBrowserVoiceGlobals({ getUserMedia });
+    const host = createHost({
+      voiceAvailable: false,
+      voiceAvailabilityReason: "Browser voice is disabled in the current gateway config.",
+    });
+
+    await handleVoiceConnect(host as never);
+
+    expect(host.voiceError).toBe("Browser voice is disabled in the current gateway config.");
+    expect(host.client.request).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(wsInstances).toHaveLength(0);
+  });
+
+  it("merges bootstrap deprecations into the cached voice warnings", async () => {
+    installBrowserVoiceGlobals();
+    const host = createHost({
+      voiceDeprecations: ["gateway warning"],
+      client: {
+        request: vi.fn(async () =>
+          createBootstrapResponse({
+            deprecations: ["bootstrap warning"],
+          }),
+        ),
+      },
+    });
+
+    await handleVoiceConnect(host as never);
+
+    expect(host.voiceDeprecations).toEqual(["gateway warning", "bootstrap warning"]);
+  });
+
   it("surfaces microphone permission failures", async () => {
     installBrowserVoiceGlobals({
       getUserMedia: vi.fn(async () => {
@@ -301,6 +432,31 @@ describe("handleVoiceConnect", () => {
     expect(host.voiceError).toBe("Permission denied");
     expect(host.voiceConnecting).toBe(false);
     expect(wsInstances).toHaveLength(0);
+  });
+
+  it("preserves timeout errors across normal websocket teardown", async () => {
+    installBrowserVoiceGlobals();
+    const host = createHost();
+
+    await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+      }),
+    );
+
+    ws?.emitMessage(JSON.stringify({ type: "error", message: "voice session timeout" }));
+    ws?.close(1000, "voice session timeout");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(host.voiceError).toBe("voice session timeout");
+    expect(host.voiceConnected).toBe(false);
+    expect(host.voiceHandle).toBeNull();
   });
 
   it("surfaces websocket transport errors", async () => {

@@ -166,6 +166,11 @@ export class OpenClawApp extends LitElement {
     Boolean(navigator.mediaDevices?.getUserMedia) &&
     typeof AudioContext !== "undefined" &&
     typeof AudioWorkletNode !== "undefined";
+  @state() voiceAvailable = false;
+  @state() voiceAvailabilityReason: string | null = null;
+  @state() voiceConfigLoading = false;
+  @state() voiceConfigProvider: string | null = null;
+  @state() voiceDeprecations: string[] = [];
   @state() voiceConnecting = false;
   @state() voiceConnected = false;
   @state() voiceStatus: string | null = null;

@@ -11,6 +11,7 @@ import {
   startConnectedServerWithClient,
   trackConnectChallengeNonce,
 } from "./test-helpers.js";
+import { VOICE_CALL_PLUGIN_CONFIG_DEPRECATED_MESSAGE } from "../config/voice.js";
 
 type MockOrchestrator = EventEmitter & {
   audioFrames: Buffer[];
@@ -34,6 +35,11 @@ type MockRuntimeRecord = {
         channels: number;
         frameDurationMs: number;
       };
+      deployment: {
+        websocket: {
+          maxSessionMinutes?: number;
+        };
+      };
     };
     orchestrator: MockOrchestrator;
     connect: () => Promise<void>;
@@ -42,6 +48,7 @@ type MockRuntimeRecord = {
 
 const runtimeMockState = vi.hoisted(() => ({
   runtimes: [] as MockRuntimeRecord[],
+  maxSessionMinutes: undefined as number | undefined,
 }));
 
 vi.mock("../voice/runtime.js", () => {
@@ -73,6 +80,11 @@ vi.mock("../voice/runtime.js", () => {
       sharedChatHistory: true,
       transcriptSource: "provider" as const,
       sessionKeyPrefix: "voice",
+    },
+    deployment: {
+      websocket: {
+        maxSessionMinutes: runtimeMockState.maxSessionMinutes,
+      },
     },
   }));
 
@@ -107,6 +119,11 @@ vi.mock("../voice/runtime.js", () => {
           channels: 1,
           frameDurationMs: 20,
         },
+        deployment: {
+          websocket: {
+            maxSessionMinutes: runtimeMockState.maxSessionMinutes,
+          },
+        },
       },
       orchestrator,
       connect: async () => {
@@ -134,14 +151,44 @@ async function writeVoiceConfig(extra: Record<string, unknown> = {}): Promise<vo
     throw new Error("OPENCLAW_CONFIG_PATH is not set for gateway tests");
   }
 
+  const extraVoice =
+    extra.voice && typeof extra.voice === "object" && !Array.isArray(extra.voice)
+      ? (extra.voice as Record<string, unknown>)
+      : {};
+  const extraProviders =
+    extraVoice.providers && typeof extraVoice.providers === "object" && !Array.isArray(extraVoice.providers)
+      ? (extraVoice.providers as Record<string, unknown>)
+      : {};
+  const extraBrowser =
+    extraVoice.browser && typeof extraVoice.browser === "object" && !Array.isArray(extraVoice.browser)
+      ? (extraVoice.browser as Record<string, unknown>)
+      : {};
+  const extraSession =
+    extraVoice.session && typeof extraVoice.session === "object" && !Array.isArray(extraVoice.session)
+      ? (extraVoice.session as Record<string, unknown>)
+      : {};
+  const extraDeployment =
+    extraVoice.deployment && typeof extraVoice.deployment === "object" && !Array.isArray(extraVoice.deployment)
+      ? (extraVoice.deployment as Record<string, unknown>)
+      : {};
+  const extraWebsocket =
+    extraDeployment.websocket &&
+    typeof extraDeployment.websocket === "object" &&
+    !Array.isArray(extraDeployment.websocket)
+      ? (extraDeployment.websocket as Record<string, unknown>)
+      : {};
+
   const config = {
+    ...extra,
     voice: {
       provider: "openai-realtime",
+      ...extraVoice,
       providers: {
         "openai-realtime": {
           apiKey: "test-api-key",
           modelId: "gpt-4o-realtime-preview",
         },
+        ...extraProviders,
       },
       browser: {
         enabled: true,
@@ -149,6 +196,7 @@ async function writeVoiceConfig(extra: Record<string, unknown> = {}): Promise<vo
         sampleRateHz: 16000,
         channels: 1,
         frameDurationMs: 20,
+        ...extraBrowser,
       },
       session: {
         interruptOnSpeech: true,
@@ -157,9 +205,15 @@ async function writeVoiceConfig(extra: Record<string, unknown> = {}): Promise<vo
         sharedChatHistory: true,
         transcriptSource: "provider",
         sessionKeyPrefix: "voice",
+        ...extraSession,
+      },
+      deployment: {
+        ...extraDeployment,
+        websocket: {
+          ...extraWebsocket,
+        },
       },
     },
-    ...extra,
   };
 
   await fs.mkdir(path.dirname(configPath), { recursive: true });
@@ -226,6 +280,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   runtimeMockState.runtimes.length = 0;
+  runtimeMockState.maxSessionMinutes = undefined;
   await writeVoiceConfig();
 });
 
@@ -281,6 +336,56 @@ describe("gateway browser voice", () => {
     } finally {
       ws.close();
     }
+  });
+
+  it("returns browser voice config metadata and deprecations", async () => {
+    await writeVoiceConfig({
+      voice: {
+        browser: {
+          vad: "provider",
+        },
+      },
+      plugins: {
+        entries: {
+          "voice-call": {
+            config: {
+              enabled: true,
+            },
+          },
+        },
+      },
+    });
+
+    const response = await rpcReq<{
+      config?: {
+        voice?: {
+          provider?: string;
+          resolved?: { provider?: string };
+          browser?: { enabled?: boolean; channels?: number; vad?: string };
+          session?: { sharedChatHistory?: boolean };
+          deprecations?: string[];
+        };
+      };
+    }>(startedServer.ws, "voice.config", {});
+
+    expect(response.ok).toBe(true);
+    expect(response.payload).toMatchObject({
+      config: {
+        voice: {
+          provider: "openai-realtime",
+          resolved: { provider: "openai-realtime" },
+          browser: {
+            enabled: true,
+            channels: 1,
+            vad: "provider",
+          },
+          session: {
+            sharedChatHistory: true,
+          },
+          deprecations: [VOICE_CALL_PLUGIN_CONFIG_DEPRECATED_MESSAGE],
+        },
+      },
+    });
   });
 
   it("boots /voice/ws with a one-time ticket and routes control frames to the runtime", async () => {
@@ -346,6 +451,67 @@ describe("gateway browser voice", () => {
     }
   });
 
+  it("supports raw-auth /voice/ws startup for compatibility", async () => {
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      voiceWs.send(
+        JSON.stringify({
+          type: "start",
+          auth: { token: "test-gateway-token-1234567890" },
+          sessionKey: "voice:browser:raw-auth",
+        }),
+      );
+
+      const ready = await onceMessage<{
+        type?: string;
+        sessionKey?: string;
+        provider?: string;
+      }>(voiceWs, (message) => message.type === "ready");
+
+      expect(ready).toMatchObject({
+        type: "ready",
+        sessionKey: "voice:browser:raw-auth",
+        provider: "openai-realtime",
+      });
+      expect(runtimeMockState.runtimes).toHaveLength(1);
+      expect(runtimeMockState.runtimes[0]?.options).toMatchObject({
+        sessionKey: "voice:browser:raw-auth",
+      });
+    } finally {
+      if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {
+        voiceWs.close();
+      }
+    }
+  });
+
+  it("times out when /voice/ws does not receive a start frame", async () => {
+    await writeVoiceConfig({
+      voice: {
+        browser: {
+          authTimeoutMs: 25,
+        },
+      },
+    });
+
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      const errorPromise = onceMessage<{ type?: string; message?: string }>(
+        voiceWs,
+        (message) => message.type === "error",
+        2000,
+      );
+      const closePromise = waitForClose(voiceWs);
+
+      const [error, close] = await Promise.all([errorPromise, closePromise]);
+      expect(error.message).toBe("voice start timeout");
+      expect(close).toMatchObject({ code: 4408, reason: "voice start timeout" });
+    } finally {
+      if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {
+        voiceWs.close();
+      }
+    }
+  });
+
   it("rejects invalid or reused voice tickets", async () => {
     const bootstrap = await rpcReq<{ ticket?: string }>(startedServer.ws, "voice.session.create", {});
     expect(bootstrap.ok).toBe(true);
@@ -381,6 +547,90 @@ describe("gateway browser voice", () => {
     }
   });
 
+  it("rejects invalid control frames after the voice session starts", async () => {
+    const bootstrap = await rpcReq<{ ticket?: string }>(startedServer.ws, "voice.session.create", {});
+    expect(bootstrap.ok).toBe(true);
+
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      voiceWs.send(JSON.stringify({ type: "start", ticket: bootstrap.payload?.ticket }));
+      await onceMessage(voiceWs, (message) => message.type === "ready");
+
+      const errorPromise = onceMessage<{ type?: string; message?: string }>(
+        voiceWs,
+        (message) => message.type === "error",
+      );
+      voiceWs.send("not-json");
+
+      const error = await errorPromise;
+      expect(error.message).toBe("invalid voice control frame");
+    } finally {
+      if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {
+        voiceWs.close();
+      }
+    }
+  });
+
+  it("responds to ping control frames after the voice session starts", async () => {
+    const bootstrap = await rpcReq<{ ticket?: string }>(startedServer.ws, "voice.session.create", {});
+    expect(bootstrap.ok).toBe(true);
+
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      voiceWs.send(JSON.stringify({ type: "start", ticket: bootstrap.payload?.ticket }));
+      await onceMessage(voiceWs, (message) => message.type === "ready");
+
+      const pongPromise = onceMessage<{ type?: string }>(voiceWs, (message) => message.type === "pong");
+      voiceWs.send(JSON.stringify({ type: "ping" }));
+
+      await expect(pongPromise).resolves.toMatchObject({ type: "pong" });
+    } finally {
+      if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {
+        voiceWs.close();
+      }
+    }
+  });
+
+  it("enforces websocket session timeout when configured", async () => {
+    runtimeMockState.maxSessionMinutes = 0.001;
+
+    const bootstrap = await rpcReq<{ ticket?: string; sessionKey?: string }>(
+      startedServer.ws,
+      "voice.session.create",
+      {
+        sessionKey: "voice:test-session-timeout",
+      },
+    );
+    expect(bootstrap.ok).toBe(true);
+
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      voiceWs.send(JSON.stringify({ type: "start", ticket: bootstrap.payload?.ticket }));
+      await onceMessage(voiceWs, (message) => message.type === "ready");
+
+      const errorPromise = onceMessage<{ type?: string; message?: string }>(
+        voiceWs,
+        (message) => message.type === "error" && message.message === "voice session timeout",
+        2000,
+      );
+      const closePromise = waitForClose(voiceWs);
+
+      const [error, close] = await Promise.all([errorPromise, closePromise]);
+      expect(error.message).toBe("voice session timeout");
+      expect(close).toMatchObject({ code: 1000, reason: "voice session timeout" });
+
+      const runtimeRecord = runtimeMockState.runtimes[0];
+      if (!runtimeRecord) {
+        throw new Error("expected a mocked voice runtime");
+      }
+      expect(runtimeRecord.runtime.orchestrator.closeCount).toBeGreaterThanOrEqual(1);
+    } finally {
+      if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {
+        voiceWs.close();
+      }
+    }
+  });
+
   it("rejects oversized audio frames after the voice session starts", async () => {
     const bootstrap = await rpcReq<{ ticket?: string }>(startedServer.ws, "voice.session.create", {});
     expect(bootstrap.ok).toBe(true);
@@ -405,4 +655,3 @@ describe("gateway browser voice", () => {
     }
   });
 });
-

@@ -80,6 +80,7 @@ export type ResolvedVoiceSessionConfig = {
     sampleRateHz: number;
     channels: number;
     frameDurationMs: number;
+    vad: "client" | "provider" | "server";
     authTimeoutMs: number;
   };
   session: {
@@ -90,6 +91,11 @@ export type ResolvedVoiceSessionConfig = {
     transcriptSource: "provider";
     silenceTimeoutMs?: number;
     sessionKeyPrefix: string;
+  };
+  deployment: {
+    websocket: {
+      maxSessionMinutes?: number;
+    };
   };
 };
 
@@ -304,6 +310,21 @@ function buildDefaultSessionKey(prefix: string, hint = "browser"): string {
   return `${prefix}:${hint}:${randomUUID()}`;
 }
 
+function validateBrowserVoiceMvpConfig(resolved: {
+  browser: ResolvedVoiceSessionConfig["browser"];
+  session: ResolvedVoiceSessionConfig["session"];
+}): void {
+  if (resolved.browser.channels !== 1) {
+    throw new Error("voice.browser.channels must be 1 for browser voice");
+  }
+  if (resolved.browser.vad !== "provider") {
+    throw new Error('voice.browser.vad must be "provider" for browser voice');
+  }
+  if (!resolved.session.sharedChatHistory) {
+    throw new Error("voice.session.sharedChatHistory must be true for browser voice");
+  }
+}
+
 export async function resolveVoiceSessionConfig(params: {
   cfg?: OpenClawConfig;
   voice?: VoiceConfig;
@@ -348,7 +369,7 @@ export async function resolveVoiceSessionConfig(params: {
   const wsPathRaw = normalizeNonEmptyString(voice.browser?.wsPath) ?? "/voice/ws";
   const wsPath = wsPathRaw.startsWith("/") ? wsPathRaw : `/${wsPathRaw}`;
 
-  return {
+  const resolved = {
     cfg,
     voice,
     providerId,
@@ -360,6 +381,7 @@ export async function resolveVoiceSessionConfig(params: {
       sampleRateHz: voice.browser?.sampleRateHz ?? DEFAULT_VOICE_SAMPLE_RATE_HZ,
       channels: voice.browser?.channels ?? 1,
       frameDurationMs: voice.browser?.frameDurationMs ?? DEFAULT_VOICE_FRAME_DURATION_MS,
+      vad: voice.browser?.vad ?? "provider",
       authTimeoutMs: voice.browser?.authTimeoutMs ?? 10_000,
     },
     session: {
@@ -371,7 +393,15 @@ export async function resolveVoiceSessionConfig(params: {
       silenceTimeoutMs: voice.session?.silenceTimeoutMs,
       sessionKeyPrefix: voice.session?.sessionKeyPrefix ?? DEFAULT_VOICE_SESSION_KEY_PREFIX,
     },
-  };
+    deployment: {
+      websocket: {
+        maxSessionMinutes: voice.deployment?.websocket?.maxSessionMinutes,
+      },
+    },
+  } satisfies ResolvedVoiceSessionConfig;
+
+  validateBrowserVoiceMvpConfig(resolved);
+  return resolved;
 }
 
 export function createVoiceAdapter(providerId: string): VoiceAdapter {

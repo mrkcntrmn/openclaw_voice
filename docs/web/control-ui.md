@@ -95,11 +95,11 @@ Browser voice in the Control UI is the supported voice MVP.
 
 Flow:
 
-- The authenticated Control UI session calls `voice.session.create`.
+- The authenticated Control UI session calls `voice.config` as a non-secret preflight, then `voice.session.create`.
 - The Gateway returns a short-lived one-time ticket plus browser transport metadata.
 - The browser opens `/voice/ws` and starts the session with `{ "type": "start", "ticket": "..." }`.
-- Audio streams as 16 kHz mono PCM16; provider transcripts are the source of truth.
-- Final user and assistant turns are appended to the normal shared chat history.
+- Audio streams as 16 kHz mono PCM16 with `channels: 1`; provider-managed VAD and provider transcripts are the source of truth.
+- Final user and assistant turns are appended to the normal shared chat history. Browser voice requires `session.sharedChatHistory: true`.
 
 Canonical config lives under top-level `voice`:
 
@@ -123,6 +123,7 @@ Canonical config lives under top-level `voice`:
       sampleRateHz: 16000,
       channels: 1,
       frameDurationMs: 20,
+      vad: "provider",
     },
     session: {
       interruptOnSpeech: true,
@@ -131,6 +132,11 @@ Canonical config lives under top-level `voice`:
       sharedChatHistory: true,
       transcriptSource: "provider",
     },
+    deployment: {
+      websocket: {
+        maxSessionMinutes: 15,
+      },
+    },
   },
 }
 ```
@@ -138,8 +144,11 @@ Canonical config lives under top-level `voice`:
 Notes:
 
 - `voice` is canonical. `talk` remains a backward-compatible input only.
+- Browser voice rejects `voice.browser.channels !== 1`, `voice.browser.vad !== "provider"`, or `voice.session.sharedChatHistory === false`.
+- `deployment.websocket.maxSessionMinutes` sends a final `voice session timeout` error before `/voice/ws` closes.
 - The recommended browser flow does not send shared token/password in the `/voice/ws` start frame.
 - Raw auth on `/voice/ws` is a legacy compatibility/debug path and is not the supported browser bootstrap.
+- `messaging`, `channels`, and non-browser deployment knobs are future scaffolding, not active browser-MVP features.
 - `plugins.entries.voice-call.config` is deprecated and ignored for browser voice.
 
 Cron jobs panel notes:
@@ -320,3 +329,4 @@ Example:
 ```
 
 Remote access setup details: [Remote access](/gateway/remote).
+

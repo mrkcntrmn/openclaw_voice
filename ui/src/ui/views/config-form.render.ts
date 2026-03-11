@@ -208,6 +208,16 @@ const sectionIcons = {
       <polyline points="21 15 16 10 5 21"></polyline>
     </svg>
   `,
+  voice: html`
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"></path>
+      <path d="M6 11a6 6 0 0 0 12 0"></path>
+      <path d="M12 17v4"></path>
+      <path d="M8 21h8"></path>
+      <path d="M19 9a7 7 0 0 1 0 6"></path>
+      <path d="M5 9a7 7 0 0 0 0 6"></path>
+    </svg>
+  `,
   talk: html`
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
       <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
@@ -270,7 +280,14 @@ export const SECTION_META: Record<string, { label: string; description: string }
   web: { label: "Web", description: "Web server and API settings" },
   discovery: { label: "Discovery", description: "Service discovery and networking" },
   canvasHost: { label: "Canvas Host", description: "Canvas rendering and display" },
-  talk: { label: "Talk", description: "Voice and speech settings" },
+  voice: {
+    label: "Voice",
+    description: "Browser voice transport, session behavior, and realtime provider settings",
+  },
+  talk: {
+    label: "Talk (Legacy)",
+    description: "Legacy compatibility input for older Talk clients during voice migration",
+  },
   plugins: { label: "Plugins", description: "Plugin management and extensions" },
 };
 

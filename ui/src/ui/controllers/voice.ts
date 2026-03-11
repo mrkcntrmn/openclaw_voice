@@ -99,6 +99,26 @@ type VoiceSessionBootstrapResponse = {
   deprecations?: string[];
 };
 
+type VoiceConfigResponse = {
+  config?: {
+    voice?: {
+      provider?: string;
+      browser?: {
+        enabled?: boolean;
+        channels?: number;
+        vad?: string;
+      };
+      session?: {
+        sharedChatHistory?: boolean;
+      };
+      resolved?: {
+        provider?: string;
+      };
+      deprecations?: string[];
+    };
+  };
+};
+
 type VoiceServerControlFrame =
   | {
       type: "ready";
@@ -132,6 +152,11 @@ type VoiceHost = {
   chatStreamStartedAt: number | null;
   lastError: string | null;
   voiceSupported: boolean;
+  voiceAvailable: boolean;
+  voiceAvailabilityReason: string | null;
+  voiceConfigLoading: boolean;
+  voiceConfigProvider: string | null;
+  voiceDeprecations: string[];
   voiceConnecting: boolean;
   voiceConnected: boolean;
   voiceStatus: string | null;
@@ -172,6 +197,127 @@ function resolveVoiceSupport(): boolean {
     typeof navigator !== "undefined" &&
     Boolean(navigator.mediaDevices?.getUserMedia)
   );
+}
+
+type VoicePreflightState = {
+  available: boolean;
+  reason: string | null;
+  provider: string | null;
+  deprecations: string[];
+};
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => normalizeString(entry))
+    .filter((entry): entry is string => Boolean(entry));
+}
+
+function mergeVoiceDeprecations(existing: string[], incoming: string[]): string[] {
+  const merged = new Set<string>();
+  for (const entry of [...existing, ...incoming]) {
+    const normalized = normalizeString(entry);
+    if (normalized) {
+      merged.add(normalized);
+    }
+  }
+  return [...merged];
+}
+
+function resolveVoicePreflightState(response: VoiceConfigResponse | null): VoicePreflightState {
+  const voice = isRecord(response?.config?.voice)
+    ? (response?.config?.voice as NonNullable<NonNullable<VoiceConfigResponse["config"]>["voice"]>)
+    : null;
+  const provider =
+    normalizeString(voice?.resolved?.provider) ?? normalizeString(voice?.provider) ?? null;
+  const deprecations = mergeVoiceDeprecations([], normalizeStringList(voice?.deprecations));
+
+  if (!voice) {
+    return {
+      available: false,
+      reason: "Browser voice is not configured in the current gateway config.",
+      provider: null,
+      deprecations,
+    };
+  }
+
+  const browser = isRecord(voice.browser) ? voice.browser : null;
+  const session = isRecord(voice.session) ? voice.session : null;
+  const channels = typeof browser?.channels === "number" ? browser.channels : 1;
+  const vad = normalizeString(browser?.vad) ?? "provider";
+  const sharedChatHistory =
+    typeof session?.sharedChatHistory === "boolean" ? session.sharedChatHistory : true;
+
+  if (browser?.enabled === false) {
+    return {
+      available: false,
+      reason: "Browser voice is disabled in the current gateway config.",
+      provider,
+      deprecations,
+    };
+  }
+  if (channels !== 1) {
+    return {
+      available: false,
+      reason: "voice.browser.channels must be 1 for browser voice",
+      provider,
+      deprecations,
+    };
+  }
+  if (vad !== "provider") {
+    return {
+      available: false,
+      reason: 'voice.browser.vad must be "provider" for browser voice',
+      provider,
+      deprecations,
+    };
+  }
+  if (!sharedChatHistory) {
+    return {
+      available: false,
+      reason: "voice.session.sharedChatHistory must be true for browser voice",
+      provider,
+      deprecations,
+    };
+  }
+
+  return {
+    available: true,
+    reason: null,
+    provider,
+    deprecations,
+  };
+}
+
+export async function refreshVoiceConfig(host: VoiceHost): Promise<void> {
+  if (!host.client || !host.connected) {
+    host.voiceConfigLoading = false;
+    host.voiceAvailable = false;
+    host.voiceAvailabilityReason = null;
+    host.voiceConfigProvider = null;
+    host.voiceDeprecations = [];
+    return;
+  }
+
+  host.voiceConfigLoading = true;
+  try {
+    const response = await host.client.request<VoiceConfigResponse>("voice.config", {});
+    const preflight = resolveVoicePreflightState(isRecord(response) ? response : null);
+    host.voiceAvailable = preflight.available;
+    host.voiceAvailabilityReason = preflight.reason;
+    host.voiceConfigProvider = preflight.provider;
+    host.voiceDeprecations = preflight.deprecations;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    host.voiceAvailable = false;
+    host.voiceAvailabilityReason = "Unable to load voice config: " + message;
+    host.voiceConfigProvider = null;
+    host.voiceDeprecations = [];
+  } finally {
+    host.voiceConfigLoading = false;
+  }
 }
 
 function formatVoiceStatus(state: string | null, detail: string | null): string {
@@ -328,10 +474,19 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
     host.voiceError = "Connect to the gateway before starting voice.";
     return;
   }
+  if (host.voiceConfigLoading) {
+    host.voiceError = "Checking browser voice configuration. Retry in a moment.";
+    return;
+  }
+  if (!host.voiceAvailable) {
+    host.voiceError =
+      host.voiceAvailabilityReason ?? "Browser voice is unavailable in the current gateway config.";
+    return;
+  }
 
   host.voiceConnecting = true;
   host.voiceError = null;
-  host.voiceStatus = "Requesting microphone";
+  host.voiceStatus = "Preparing voice session";
   host.voiceUserTranscript = null;
   host.voiceAssistantTranscript = null;
 
@@ -389,20 +544,15 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
   };
 
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
-
-    host.voiceStatus = "Preparing voice session";
     const bootstrap = await createVoiceSessionBootstrap(host);
     if (!bootstrap) {
       throw new Error("voice.session.create returned no voice session bootstrap");
     }
+
+    host.voiceDeprecations = mergeVoiceDeprecations(
+      host.voiceDeprecations,
+      normalizeStringList(bootstrap.deprecations),
+    );
 
     const ticket = normalizeString(bootstrap.ticket);
     if (!ticket) {
@@ -420,6 +570,16 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
         : DEFAULT_FRAME_DURATION_MS;
     const providerId = normalizeString(bootstrap.provider) ?? "voice";
     const bootstrapSessionKey = normalizeString(bootstrap.sessionKey) ?? host.sessionKey;
+
+    host.voiceStatus = "Requesting microphone";
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
 
     audioContext = new AudioContext();
     await audioContext.resume();
@@ -558,11 +718,15 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
     });
 
     ws.addEventListener("close", (event) => {
+      const preserveExistingError = !closing && Boolean(host.voiceError);
       const shouldReportError = !closing && event.code !== 1000;
-      if (shouldReportError) {
-        host.voiceError = `Voice disconnected (${event.code}): ${event.reason || "no reason"}`;
+      if (shouldReportError && !host.voiceError) {
+        host.voiceError = "Voice disconnected (" + event.code + "): " + (event.reason || "no reason");
       }
-      void teardown({ preserveError: shouldReportError, skipSocketClose: true });
+      void teardown({
+        preserveError: preserveExistingError || shouldReportError,
+        skipSocketClose: true,
+      });
     });
 
     ws.addEventListener("error", () => {

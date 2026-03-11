@@ -111,6 +111,30 @@ async function handleVoiceConnection(params: {
   const authTimeoutMs = normalizeVoiceSection(cfg.voice)?.browser?.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS;
   let runtime: VoiceSessionRuntime | null = null;
   let started = false;
+  let sessionTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearSessionTimer = () => {
+    if (sessionTimer !== null) {
+      clearTimeout(sessionTimer);
+      sessionTimer = null;
+    }
+  };
+
+  const armSessionTimer = (activeRuntime: VoiceSessionRuntime) => {
+    clearSessionTimer();
+    const maxSessionMinutes = activeRuntime.resolved.deployment.websocket.maxSessionMinutes;
+    if (typeof maxSessionMinutes !== "number" || !Number.isFinite(maxSessionMinutes) || maxSessionMinutes <= 0) {
+      return;
+    }
+    sessionTimer = setTimeout(() => {
+      sendJson(params.ws, { type: "error", message: "voice session timeout" });
+      activeRuntime.orchestrator.close();
+      if (params.ws.readyState === WebSocket.OPEN || params.ws.readyState === WebSocket.CONNECTING) {
+        params.ws.close(1000, "voice session timeout");
+      }
+    }, Math.round(maxSessionMinutes * 60_000));
+    sessionTimer.unref?.();
+  };
 
   const authTimer = setTimeout(() => {
     if (!started) {
@@ -121,10 +145,12 @@ async function handleVoiceConnection(params: {
 
   params.ws.on("close", () => {
     clearTimeout(authTimer);
+    clearSessionTimer();
     runtime?.orchestrator.close();
   });
   params.ws.on("error", () => {
     clearTimeout(authTimer);
+    clearSessionTimer();
     runtime?.orchestrator.close();
   });
   params.ws.on("message", (data, isBinary) => {
@@ -159,6 +185,7 @@ async function handleVoiceConnection(params: {
             instructions: ticketPayload.instructions,
           });
         } else {
+          // Raw auth on /voice/ws stays available for compatibility and debugging.
           const auth = await authorizeWsControlUiGatewayConnect({
             auth: params.resolvedAuth,
             connectAuth: frame.auth ?? null,
@@ -190,6 +217,7 @@ async function handleVoiceConnection(params: {
         await runtime.connect();
         started = true;
         clearTimeout(authTimer);
+        armSessionTimer(runtime);
         sendJson(params.ws, {
           type: "ready",
           sessionKey,

@@ -1683,16 +1683,23 @@ Canonical browser/dashboard voice config. This drives `voice.config`, `voice.ses
       transcriptSource: "provider",
       sessionKeyPrefix: "voice",
     },
+    deployment: {
+      websocket: {
+        maxSessionMinutes: 15,
+      },
+    },
   },
 }
 ```
 
 - `voice` is the canonical browser voice config surface.
-- Control UI browser voice bootstraps with `voice.session.create`, then opens `/voice/ws` and sends a one-time `ticket` in the `start` frame.
+- Control UI browser voice preflights with `voice.config`, then bootstraps with `voice.session.create`, opens `/voice/ws`, and sends a one-time `ticket` in the `start` frame.
+- Browser MVP constraints are strict: `browser.channels` must stay `1`, `browser.vad` must stay `"provider"`, and `session.sharedChatHistory` must stay `true`.
 - `browser.wsPath` defaults to `/voice/ws`; browser transport defaults to 16 kHz mono PCM16.
 - Final provider transcripts are appended to normal chat history when `session.persistTranscripts` and `session.sharedChatHistory` are enabled (both default to `true`).
+- `deployment.websocket.maxSessionMinutes` sends a final `voice session timeout` error before the browser websocket closes.
 - `providers.*.apiKey` accept plaintext strings or SecretRef objects.
-- `messaging`, `channels`, and `deployment` are phase-gated scaffolding for future voice surfaces; the supported MVP is browser/dashboard voice only.
+- `messaging`, `channels`, and non-browser deployment knobs are phase-gated scaffolding for future voice surfaces. The supported MVP is browser/dashboard voice only, with `deployment.websocket.maxSessionMinutes` as the active browser transport limit.
 - `plugins.entries.voice-call.config` is deprecated for browser voice and ignored by the browser runtime.
 
 ---
@@ -3033,3 +3040,4 @@ Split config into multiple files:
 ---
 
 _Related: [Configuration](/gateway/configuration) · [Configuration Examples](/gateway/configuration-examples) · [Doctor](/gateway/doctor)_
+
