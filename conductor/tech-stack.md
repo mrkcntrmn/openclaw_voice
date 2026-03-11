@@ -11,6 +11,7 @@
 ## Backend Frameworks
 - **Express / Hono:** Web frameworks for the Gateway and API.
 - **WebSocket (ws):** Communication protocol for the Gateway network.
+- **Web Audio API / AudioWorklet:** Real-time audio capture and processing in the browser.
 
 ## Database
 - **SQLite (via sqlite-vec):** Local database with vector search capabilities.
