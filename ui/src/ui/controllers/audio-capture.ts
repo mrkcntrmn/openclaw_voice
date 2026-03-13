@@ -1,7 +1,15 @@
+import {
+  downsampleInputChunkToPcm16Frames,
+  measurePcm16AudioFrame,
+  type Pcm16AudioMetrics,
+} from "./audio-capture-math.ts";
+
 const CAPTURE_WORKLET_NAME = "openclaw-pcm16-capture";
 const loadedWorkletContexts = new WeakSet<AudioContext>();
 
 const CAPTURE_WORKLET_SOURCE = `
+${downsampleInputChunkToPcm16Frames.toString()}
+${measurePcm16AudioFrame.toString()}
 class OpenClawPcm16CaptureProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -14,12 +22,14 @@ class OpenClawPcm16CaptureProcessor extends AudioWorkletProcessor {
       typeof processorOptions.frameDurationMs === "number"
         ? processorOptions.frameDurationMs
         : 20;
-    this.frameSamples = Math.max(1, Math.round((this.targetSampleRate * this.frameDurationMs) / 1000));
-    this.sourceToTargetRatio = sampleRate / this.targetSampleRate;
-    this.pendingPosition = 0;
-    this.pendingAccumulator = 0;
-    this.pendingCount = 0;
-    this.frame = [];
+    this.captureState = {
+      sourceToTargetRatio: sampleRate / this.targetSampleRate,
+      frameSamples: Math.max(1, Math.round((this.targetSampleRate * this.frameDurationMs) / 1000)),
+      pendingPosition: 0,
+      pendingAccumulator: 0,
+      pendingCount: 0,
+      frame: [],
+    };
     this.volumeUpdateCounter = 0;
     this.volumeAccumulator = 0;
     this.volumeCount = 0;
@@ -38,37 +48,23 @@ class OpenClawPcm16CaptureProcessor extends AudioWorkletProcessor {
       return true;
     }
 
+    const frames = downsampleInputChunkToPcm16Frames(input, this.captureState);
+    for (const payload of frames) {
+      const metrics = measurePcm16AudioFrame(payload, this.targetSampleRate);
+      this.port.postMessage(
+        { type: "audio", payload: payload.buffer, metrics },
+        [payload.buffer],
+      );
+    }
+
     for (let index = 0; index < input.length; index += 1) {
       const sample = input[index];
       this.volumeAccumulator += sample * sample;
       this.volumeCount += 1;
-
-      this.pendingAccumulator += sample;
-      this.pendingCount += 1;
-      this.pendingPosition += 1;
-      if (this.pendingPosition < this.sourceToTargetRatio) {
-        continue;
-      }
-
-      const averagedSample = this.pendingCount > 0 ? this.pendingAccumulator / this.pendingCount : 0;
-      this.pendingAccumulator = 0;
-      this.pendingCount = 0;
-      this.pendingPosition -= this.sourceToTargetRatio;
-      const clamped = Math.max(-1, Math.min(1, averagedSample));
-      const pcmSample = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
-      this.frame.push(Math.max(-32768, Math.min(32767, Math.round(pcmSample))));
-
-      if (this.frame.length < this.frameSamples) {
-        continue;
-      }
-
-      const payload = new Int16Array(this.frame);
-      this.frame = [];
-      this.port.postMessage(payload.buffer, [payload.buffer]);
     }
 
     this.volumeUpdateCounter += 1;
-    if (this.volumeUpdateCounter >= 4) { // ~60fps assuming 128 samples per block at 48kHz
+    if (this.volumeUpdateCounter >= 4) {
       this.volumeUpdateCounter = 0;
       const rms = Math.sqrt(this.volumeCount > 0 ? this.volumeAccumulator / this.volumeCount : 0);
       this.port.postMessage({ type: "volume", value: rms });
@@ -83,11 +79,23 @@ class OpenClawPcm16CaptureProcessor extends AudioWorkletProcessor {
 registerProcessor("${CAPTURE_WORKLET_NAME}", OpenClawPcm16CaptureProcessor);
 `;
 
+type AudioCaptureWorkletVolumeMessage = {
+  type: "volume";
+  value: number;
+};
+
+type AudioCaptureWorkletAudioMessage = {
+  type: "audio";
+  payload: ArrayBuffer;
+  metrics?: Pcm16AudioMetrics;
+};
+
 export type AudioCaptureOptions = {
   sampleRateHz: number;
   frameDurationMs: number;
   onAudioData: (data: ArrayBuffer) => void;
   onVolumeChange?: (volume: number) => void;
+  onAudioFrameStats?: (stats: Pcm16AudioMetrics & { sequence: number }) => void;
 };
 
 export class AudioCapture {
@@ -96,10 +104,12 @@ export class AudioCapture {
   private source: MediaStreamAudioSourceNode | null = null;
   private worklet: AudioWorkletNode | null = null;
   private sink: GainNode | null = null;
+  private frameSequence = 0;
 
   constructor(private options: AudioCaptureOptions) {}
 
   async start(): Promise<void> {
+    this.frameSequence = 0;
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -124,13 +134,31 @@ export class AudioCapture {
       },
     });
 
-    this.worklet.port.addEventListener("message", (event: MessageEvent<ArrayBuffer | { type: "volume"; value: number }>) => {
-      if (typeof event.data === "object" && event.data !== null && "type" in event.data && event.data.type === "volume") {
-        this.options.onVolumeChange?.(event.data.value);
-        return;
-      }
-      this.options.onAudioData(event.data as ArrayBuffer);
-    });
+    this.worklet.port.addEventListener(
+      "message",
+      (event: MessageEvent<AudioCaptureWorkletAudioMessage | AudioCaptureWorkletVolumeMessage | ArrayBuffer>) => {
+        const data = event.data;
+        if (typeof data === "object" && data !== null && "type" in data && data.type === "volume") {
+          this.options.onVolumeChange?.(data.value);
+          return;
+        }
+
+        if (typeof data === "object" && data !== null && "type" in data && data.type === "audio") {
+          const sequence = ++this.frameSequence;
+          const metrics = data.metrics ?? measurePcm16AudioFrame(data.payload, this.options.sampleRateHz);
+          this.options.onAudioFrameStats?.({ sequence, ...metrics });
+          this.options.onAudioData(data.payload);
+          return;
+        }
+
+        if (data instanceof ArrayBuffer) {
+          const sequence = ++this.frameSequence;
+          const metrics = measurePcm16AudioFrame(data, this.options.sampleRateHz);
+          this.options.onAudioFrameStats?.({ sequence, ...metrics });
+          this.options.onAudioData(data);
+        }
+      },
+    );
     this.worklet.port.start();
 
     this.sink = this.context.createGain();
@@ -177,6 +205,7 @@ export class AudioCapture {
     this.source = null;
     this.worklet = null;
     this.sink = null;
+    this.frameSequence = 0;
   }
 
   private async ensureWorklet(context: AudioContext): Promise<void> {

@@ -43,6 +43,10 @@ export type ChatState = {
   lastError: string | null;
 };
 
+export type LoadChatHistoryOptions = {
+  sessionKey?: string;
+};
+
 export type ChatEventPayload = {
   runId: string;
   sessionKey: string;
@@ -63,17 +67,18 @@ function maybeResetToolStream(state: ChatState) {
   }
 }
 
-export async function loadChatHistory(state: ChatState) {
+export async function loadChatHistory(state: ChatState, opts?: LoadChatHistoryOptions) {
   if (!state.client || !state.connected) {
     return;
   }
+  const sessionKey = opts?.sessionKey?.trim() || state.sessionKey;
   state.chatLoading = true;
   state.lastError = null;
   try {
     const res = await state.client.request<{ messages?: Array<unknown>; thinkingLevel?: string }>(
       "chat.history",
       {
-        sessionKey: state.sessionKey,
+        sessionKey,
         limit: 200,
       },
     );

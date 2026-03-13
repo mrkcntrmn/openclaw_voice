@@ -565,4 +565,26 @@ describe("loadChatHistory", () => {
     expect(state.chatLoading).toBe(false);
     expect(state.lastError).toBeNull();
   });
+
+  it("uses an explicit session key override for history refreshes", async () => {
+    const request = vi.fn().mockResolvedValue({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "voice reply" }] }],
+      thinkingLevel: "low",
+    });
+    const state = createState({
+      connected: true,
+      sessionKey: "main",
+      client: { request } as unknown as ChatState["client"],
+    });
+
+    await loadChatHistory(state, { sessionKey: "agent:main:main" });
+
+    expect(request).toHaveBeenCalledWith("chat.history", {
+      sessionKey: "agent:main:main",
+      limit: 200,
+    });
+    expect(state.chatMessages).toEqual([
+      { role: "assistant", content: [{ type: "text", text: "voice reply" }] },
+    ]);
+  });
 });

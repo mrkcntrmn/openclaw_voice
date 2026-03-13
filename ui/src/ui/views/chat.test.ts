@@ -204,6 +204,19 @@ describe("chat view", () => {
     expect(container.textContent).not.toContain("New session");
   });
 
+  it("renders the voice panel in a right-side rail", () => {
+    const container = document.createElement("div");
+    render(renderChat(createProps()), container);
+
+    const workspace = container.querySelector(".chat-workspace");
+    expect(workspace).not.toBeNull();
+    expect(Array.from(workspace?.children ?? []).map((node) => node.className)).toEqual([
+      "chat-primary",
+      "chat-voice-rail",
+    ]);
+    expect(container.querySelector(".chat-voice-rail .voice-panel")).not.toBeNull();
+  });
+
   it("shows a new session button when aborting is unavailable", () => {
     const container = document.createElement("div");
     const onNewSession = vi.fn();
@@ -284,3 +297,4 @@ describe("chat view", () => {
     expect(senderLabels).toContain("Joaquin De Rojas");
   });
 });
+

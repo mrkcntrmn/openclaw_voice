@@ -13,6 +13,7 @@ import {
 } from "../config/sessions.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { loadSessionEntry, readSessionMessages } from "../gateway/session-utils.js";
+import { createVoiceDebugLogger, summarizeVoiceDebugPayload, voiceDebugElapsedMs } from "./debug.js";
 
 export type VoiceTranscriptRole = "user" | "assistant";
 
@@ -21,6 +22,8 @@ export type VoiceHistoryTurn = {
   text: string;
   timestamp?: number;
 };
+
+const voiceDebug = createVoiceDebugLogger("voice/transcript");
 
 function ensureSessionHeader(sessionFile: string, sessionId: string): void {
   if (fs.existsSync(sessionFile)) {
@@ -74,13 +77,21 @@ function resolveOrCreateSessionEntry(params: {
 }): {
   storePath: string;
   entry: SessionEntry;
+  created: boolean;
 } {
   const cfg = loadConfig();
   const storePath = resolveStorePath(cfg.session?.store, { agentId: params.agentId });
   const store = loadSessionStore(storePath);
   const existing = store[params.sessionKey];
   if (existing?.sessionId) {
-    return { storePath, entry: existing };
+    voiceDebug.debug("voice transcript session entry", {
+      sessionKey: params.sessionKey,
+      agentId: params.agentId,
+      created: false,
+      sessionId: existing.sessionId,
+      storePath,
+    });
+    return { storePath, entry: existing, created: false };
   }
   const entry: SessionEntry = {
     sessionId: crypto.randomUUID(),
@@ -88,7 +99,14 @@ function resolveOrCreateSessionEntry(params: {
   };
   store[params.sessionKey] = entry;
   void saveSessionStore(storePath, store);
-  return { storePath, entry };
+  voiceDebug.debug("voice transcript session entry", {
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    created: true,
+    sessionId: entry.sessionId,
+    storePath,
+  });
+  return { storePath, entry, created: true };
 }
 
 export async function appendVoiceTranscriptMessage(params: {
@@ -99,17 +117,44 @@ export async function appendVoiceTranscriptMessage(params: {
   modelId?: string;
   agentId?: string;
 }): Promise<void> {
+  const startedAt = Date.now();
   const text = params.text.trim();
   if (!text) {
+    voiceDebug.debug("voice transcript append", {
+      sessionKey: params.sessionKey,
+      role: params.role,
+      providerId: params.providerId,
+      skipped: true,
+      reason: "empty",
+    });
     return;
   }
   const cfg = loadConfig();
   const agentId = params.agentId ?? resolveDefaultAgentId(cfg);
   const { entry: loadedEntry, storePath: loadedStorePath } = loadSessionEntry(params.sessionKey);
   const resolved = loadedEntry?.sessionId
-    ? { entry: loadedEntry, storePath: loadedStorePath }
+    ? { entry: loadedEntry, storePath: loadedStorePath, created: false }
     : resolveOrCreateSessionEntry({ sessionKey: params.sessionKey, agentId });
   const sessionFile = resolveSessionFilePath(resolved.entry.sessionId, resolved.entry, { agentId });
+
+  voiceDebug.debug("voice transcript append", {
+    sessionKey: params.sessionKey,
+    role: params.role,
+    providerId: params.providerId,
+    modelId: params.modelId,
+    sessionId: resolved.entry.sessionId,
+    sessionFile,
+    createdSessionEntry: resolved.created,
+    textLength: text.length,
+  });
+  voiceDebug.payload("voice transcript append payload", {
+    ...params,
+    text,
+  }, {
+    sessionId: resolved.entry.sessionId,
+    sessionFile,
+  });
+
   ensureSessionHeader(sessionFile, resolved.entry.sessionId);
 
   const sessionManager = SessionManager.open(sessionFile);
@@ -137,14 +182,28 @@ export async function appendVoiceTranscriptMessage(params: {
     timestamp: Date.now(),
   });
   emitSessionTranscriptUpdate(sessionFile);
+
+  voiceDebug.debug("voice transcript append complete", {
+    sessionKey: params.sessionKey,
+    role: params.role,
+    providerId: params.providerId,
+    sessionId: resolved.entry.sessionId,
+    elapsedMs: voiceDebugElapsedMs(startedAt),
+  });
 }
 
 export function loadVoiceConversationHistory(params: {
   sessionKey: string;
   limit?: number;
 }): VoiceHistoryTurn[] {
+  const startedAt = Date.now();
   const { entry, storePath } = loadSessionEntry(params.sessionKey);
   if (!entry?.sessionId || !storePath) {
+    voiceDebug.debug("voice history refresh", {
+      sessionKey: params.sessionKey,
+      found: false,
+      elapsedMs: voiceDebugElapsedMs(startedAt),
+    });
     return [];
   }
   const history = readSessionMessages(entry.sessionId, storePath, entry.sessionFile);
@@ -172,5 +231,18 @@ export function loadVoiceConversationHistory(params: {
     });
   }
   const limit = typeof params.limit === "number" && params.limit > 0 ? params.limit : 24;
-  return turns.length > limit ? turns.slice(-limit) : turns;
+  const resolvedTurns = turns.length > limit ? turns.slice(-limit) : turns;
+  voiceDebug.debug("voice history refresh", {
+    sessionKey: params.sessionKey,
+    found: true,
+    sessionId: entry.sessionId,
+    turnCount: resolvedTurns.length,
+    elapsedMs: voiceDebugElapsedMs(startedAt),
+    summary: summarizeVoiceDebugPayload(resolvedTurns),
+  });
+  voiceDebug.payload("voice history refresh payload", resolvedTurns, {
+    sessionKey: params.sessionKey,
+    sessionId: entry.sessionId,
+  });
+  return resolvedTurns;
 }

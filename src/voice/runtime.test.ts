@@ -147,14 +147,14 @@ function createConnectOptions() {
   };
 }
 
-function createLiveConnectOptions(providerId: string, apiKey: string) {
+function createLiveConnectOptions(providerId: string, apiKey: string, tools: unknown[] = []) {
   return {
     provider: { apiKey } as never,
     providerId,
     modelId:
       providerId === "gemini-live" ? "gemini-2.0-flash-exp" : "gpt-4o-realtime-preview",
     instructions: "Keep it concise.",
-    tools: [],
+    tools,
     history: [],
   };
 }
@@ -298,7 +298,20 @@ describe("voice adapters", () => {
     adapter.on("audio", (chunk) => audio.push(chunk));
     adapter.on("error", (event) => errors.push(event.message));
 
-    await adapter.connect(createLiveConnectOptions("openai-realtime", "sk-openai"));
+    await adapter.connect(
+      createLiveConnectOptions("openai-realtime", "sk-openai", [
+        {
+          name: "lookup",
+          description: "Look up something.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+            },
+          },
+        },
+      ]),
+    );
 
     const ws = wsMockState.instances[0];
     expect(ws?.url).toContain("api.openai.com");
@@ -306,11 +319,29 @@ describe("voice adapters", () => {
       type: "session.update",
       session: {
         modalities: ["text", "audio"],
+        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+        tools: [
+          {
+            type: "function",
+            name: "lookup",
+            description: "Look up something.",
+            parameters: {
+              type: "object",
+              properties: {
+                query: { type: "string" },
+              },
+            },
+          },
+        ],
       },
     });
 
     ws?.emitJson({ type: "session.created" });
-    ws?.emitJson({ type: "conversation.item.input_audio_transcription.completed", transcript: "hello" });
+    ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: "Good" });
+    ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: " morning" });
+    ws?.emitJson({ type: "conversation.item.input_audio_transcription.completed", transcript: "good morning" });
+    ws?.emitJson({ type: "response.audio_transcript.delta", delta: "Hi" });
+    ws?.emitJson({ type: "response.audio_transcript.delta", delta: " there" });
     ws?.emitJson({ type: "response.audio_transcript.done", transcript: "hi there" });
     ws?.emitJson({ type: "response.audio.delta", delta: Buffer.from("pcm").toString("base64") });
     ws?.emitJson({
@@ -327,7 +358,11 @@ describe("voice adapters", () => {
     expect(states).toContain("connected");
     expect(states).toContain("closed");
     expect(transcripts).toEqual([
-      { role: "user", text: "hello", final: true },
+      { role: "user", text: "Good", final: false },
+      { role: "user", text: " morning", final: false },
+      { role: "user", text: "good morning", final: true },
+      { role: "assistant", text: "Hi", final: false },
+      { role: "assistant", text: " there", final: false },
       { role: "assistant", text: "hi there", final: true },
     ]);
     expect(toolCalls).toEqual([

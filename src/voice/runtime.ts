@@ -12,6 +12,16 @@ import { toToolDefinitions } from "../agents/pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "../agents/pi-tools.js";
 import { cleanToolSchemaForGemini } from "../agents/pi-tools.schema.js";
 import { loadConfig, type OpenClawConfig } from "../config/config.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import {
+  createVoiceDebugLogger,
+  summarizeVoiceDebugPayload,
+  voiceDebugElapsedMs,
+} from "./debug.js";
+import {
+  measurePcm16AudioBuffer,
+  roundVoiceAudioMetric,
+} from "./audio-debug.js";
 import {
   DEFAULT_VOICE_FRAME_DURATION_MS,
   DEFAULT_VOICE_PROVIDER,
@@ -29,9 +39,27 @@ import {
 } from "./transcript.js";
 
 const DEFAULT_OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview";
-const DEFAULT_GEMINI_LIVE_MODEL = "gemini-2.0-flash-exp";
+const DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+const DEBUG_OPENAI_FORCE_COMMIT_IDLE_MS = 1_500;
+const DEBUG_OPENAI_FORCE_COMMIT_QUIET_FRAME_COUNT = 60;
+const DEBUG_OPENAI_FORCE_COMMIT_RMS_THRESHOLD = 0.01;
+const DEBUG_OPENAI_FORCE_COMMIT_PEAK_THRESHOLD = 0.03;
 const DEFAULT_GATEWAY_VOICE_INSTRUCTIONS =
   "You are OpenClaw's realtime voice assistant. Keep replies concise, conversational, and tool-aware. Use tools when they materially help, and avoid narrating internal implementation details unless asked.";
+const voiceDebug = createVoiceDebugLogger("voice");
+
+function debugVoice(message: string, meta?: Record<string, unknown>): void {
+  voiceDebug.debug(message, meta);
+}
+
+function debugVoicePayload(message: string, payload: unknown, meta?: Record<string, unknown>): void {
+  voiceDebug.payload(message, payload, meta);
+}
+
+function isOpenAIRealtimeDebugForceCommitEnabled(): boolean {
+  return isTruthyEnvValue(process.env.OPENCLAW_DEBUG_VOICE_FORCE_COMMIT);
+}
+
 
 export type VoiceTranscriptEvent = {
   role: "user" | "assistant";
@@ -120,6 +148,13 @@ function normalizeNonEmptyString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeTranscriptDelta(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return value.length > 0 ? value : undefined;
+}
+
 function stringifyToolOutput(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -188,6 +223,18 @@ function toGeminiTools(tools: ToolDefinition[]) {
       })),
     },
   ];
+}
+
+function toOpenAIRealtimeTools(tools: ToolDefinition[]) {
+  if (tools.length === 0) {
+    return undefined;
+  }
+  return tools.map((tool) => ({
+    type: "function" as const,
+    name: tool.name,
+    description: typeof tool.description === "string" ? tool.description : "",
+    parameters: (tool.parameters ?? {}) as Record<string, unknown>,
+  }));
 }
 
 type VoiceToolRuntime = {
@@ -306,6 +353,14 @@ function defaultModelIdForProvider(providerId: string): string {
   return DEFAULT_OPENAI_REALTIME_MODEL;
 }
 
+function defaultTranscriptionModelIdForProvider(providerId: string): string | undefined {
+  const normalized = providerId.trim().toLowerCase();
+  if (normalized.includes("openai")) {
+    return DEFAULT_OPENAI_TRANSCRIPTION_MODEL;
+  }
+  return undefined;
+}
+
 function buildDefaultSessionKey(prefix: string, hint = "browser"): string {
   return `${prefix}:${hint}:${randomUUID()}`;
 }
@@ -415,6 +470,26 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
   private ws: WebSocket | null = null;
   private toolArgumentBuffer = new Map<string, { name: string; argumentsText: string }>();
   private emittedToolCalls = new Set<string>();
+  private audioFramesSent = 0;
+  private firstAudioSentAt: number | null = null;
+  private firstProviderEventAt: number | null = null;
+  private firstSpeechAt: number | null = null;
+  private firstSpeechStoppedAt: number | null = null;
+  private firstTranscriptAt: number | null = null;
+  private firstAudioResponseAt: number | null = null;
+  private firstResponseCreatedAt: number | null = null;
+  private providerEventCount = 0;
+  private noSpeechWarningEmitted = false;
+  private noTranscriptWarningEmitted = false;
+  private noResponseWarningEmitted = false;
+  private bootstrapOnlyWarningEmitted = false;
+  private providerId = "openai-realtime";
+  private modelId = DEFAULT_OPENAI_REALTIME_MODEL;
+  private speechActive = false;
+  private currentTurnResponseCreated = false;
+  private currentTurnQuietFrames = 0;
+  private currentTurnFallbackIssued = false;
+  private forceCommitTimer: ReturnType<typeof setTimeout> | null = null;
 
   async connect(options: VoiceAdapterConnectOptions): Promise<void> {
     const apiKey = normalizeNonEmptyString(options.provider.apiKey);
@@ -422,14 +497,49 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       throw new Error(`voice.providers.${options.providerId}.apiKey is required for OpenAI realtime`);
     }
 
+    this.providerId = options.providerId;
+    this.modelId = options.modelId;
+    this.audioFramesSent = 0;
+    this.firstAudioSentAt = null;
+    this.firstProviderEventAt = null;
+    this.firstSpeechAt = null;
+    this.firstSpeechStoppedAt = null;
+    this.firstTranscriptAt = null;
+    this.firstAudioResponseAt = null;
+    this.firstResponseCreatedAt = null;
+    this.providerEventCount = 0;
+    this.noSpeechWarningEmitted = false;
+    this.noTranscriptWarningEmitted = false;
+    this.noResponseWarningEmitted = false;
+    this.bootstrapOnlyWarningEmitted = false;
+    this.speechActive = false;
+    this.currentTurnResponseCreated = false;
+    this.currentTurnQuietFrames = 0;
+    this.currentTurnFallbackIssued = false;
+    this.clearForceCommitTimer();
+
     const websocketUrl =
       normalizeNonEmptyString(options.provider.websocketUrl) ??
       `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(options.modelId)}`;
+    const connectStartedAt = Date.now();
+    debugVoice("voice provider connect start", {
+      providerId: options.providerId,
+      modelId: options.modelId,
+      url: websocketUrl,
+    });
     this.emit("state", { state: "connecting" } satisfies VoiceStateEvent);
     this.ws = await createWebSocket(websocketUrl, {
       Authorization: `Bearer ${apiKey}`,
       "OpenAI-Beta": "realtime=v1",
       ...options.provider.headers,
+    });
+    debugVoice("voice provider connect complete", {
+      providerId: options.providerId,
+      modelId: options.modelId,
+      url: websocketUrl,
+      elapsedMs: voiceDebugElapsedMs(connectStartedAt),
+      toolCount: options.tools.length,
+      historyCount: options.history.length,
     });
 
     this.ws.on("message", (data, isBinary) => {
@@ -464,24 +574,44 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         turn_detection: {
           type: "server_vad",
         },
-        tools: convertTools(options.tools as Parameters<typeof convertTools>[0]),
+        tools: toOpenAIRealtimeTools(options.tools),
         tool_choice: "auto",
       },
     };
-    const transcriptionModelId = normalizeNonEmptyString(options.provider.transcriptionModelId);
+    const transcriptionModelId =
+      normalizeNonEmptyString(options.provider.transcriptionModelId) ??
+      defaultTranscriptionModelIdForProvider(options.providerId);
     if (transcriptionModelId) {
       const session = sessionUpdate.session as Record<string, unknown>;
       session.input_audio_transcription = { model: transcriptionModelId };
     }
+    debugVoice("voice provider bootstrap", {
+      providerId: options.providerId,
+      modelId: options.modelId,
+      toolCount: options.tools.length,
+      historyCount: options.history.length,
+    });
     this.sendJson(sessionUpdate);
     this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
   }
 
   sendAudio(audio: Buffer): void {
+    this.audioFramesSent += 1;
+    if (this.firstAudioSentAt === null) {
+      this.firstAudioSentAt = Date.now();
+    }
+    debugVoice("voice websocket send", {
+      providerId: this.providerId,
+      frameType: "input_audio_buffer.append",
+      byteLength: audio.byteLength,
+      audioFrameCount: this.audioFramesSent,
+    });
     this.sendJson({
       type: "input_audio_buffer.append",
       audio: audio.toString("base64"),
     });
+    this.maybeForceCommitAfterQuietAudio(audio);
+    this.maybeWarnIfProviderStalled();
   }
 
   sendText(text: string): void {
@@ -517,8 +647,187 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
   }
 
   close(): void {
+    debugVoice("voice provider close", { providerId: this.providerId });
+    this.clearForceCommitTimer();
     this.ws?.close();
     this.ws = null;
+  }
+
+  private clearForceCommitTimer(): void {
+    if (this.forceCommitTimer !== null) {
+      clearTimeout(this.forceCommitTimer);
+      this.forceCommitTimer = null;
+    }
+  }
+
+  private armForceCommitTimer(): void {
+    if (
+      !isOpenAIRealtimeDebugForceCommitEnabled() ||
+      !this.speechActive ||
+      this.currentTurnFallbackIssued ||
+      this.currentTurnResponseCreated
+    ) {
+      return;
+    }
+    this.clearForceCommitTimer();
+    this.forceCommitTimer = setTimeout(() => {
+      this.forceCommitTimer = null;
+      this.forceCommitCurrentTurn("idle-timeout");
+    }, DEBUG_OPENAI_FORCE_COMMIT_IDLE_MS);
+    this.forceCommitTimer.unref?.();
+  }
+
+  private forceCommitCurrentTurn(
+    reason: "idle-timeout" | "quiet-audio-threshold",
+    metrics?: ReturnType<typeof measurePcm16AudioBuffer>,
+  ): void {
+    if (
+      !isOpenAIRealtimeDebugForceCommitEnabled() ||
+      !this.speechActive ||
+      this.currentTurnFallbackIssued ||
+      this.currentTurnResponseCreated
+    ) {
+      return;
+    }
+    this.currentTurnFallbackIssued = true;
+    this.clearForceCommitTimer();
+    debugVoice("voice provider fallback", {
+      providerId: this.providerId,
+      modelId: this.modelId,
+      reason,
+      audioFrameCount: this.audioFramesSent,
+      quietFrameCount: this.currentTurnQuietFrames,
+      ...(metrics
+        ? {
+            rms: roundVoiceAudioMetric(metrics.rms),
+            peak: roundVoiceAudioMetric(metrics.peak),
+            nonZeroRatio: roundVoiceAudioMetric(metrics.nonZeroRatio),
+          }
+        : {}),
+    });
+    this.sendJson({ type: "input_audio_buffer.commit" });
+    this.sendJson({ type: "response.create" });
+  }
+
+  private maybeForceCommitAfterQuietAudio(audio: Buffer): void {
+    if (
+      !isOpenAIRealtimeDebugForceCommitEnabled() ||
+      !this.speechActive ||
+      this.currentTurnFallbackIssued ||
+      this.currentTurnResponseCreated
+    ) {
+      return;
+    }
+    const metrics = measurePcm16AudioBuffer(audio, DEFAULT_VOICE_SAMPLE_RATE_HZ);
+    const isQuiet =
+      metrics.rms <= DEBUG_OPENAI_FORCE_COMMIT_RMS_THRESHOLD &&
+      metrics.peak <= DEBUG_OPENAI_FORCE_COMMIT_PEAK_THRESHOLD;
+    if (isQuiet) {
+      this.currentTurnQuietFrames += 1;
+      if (this.currentTurnQuietFrames >= DEBUG_OPENAI_FORCE_COMMIT_QUIET_FRAME_COUNT) {
+        this.forceCommitCurrentTurn("quiet-audio-threshold", metrics);
+        return;
+      }
+    } else {
+      this.currentTurnQuietFrames = 0;
+    }
+    this.armForceCommitTimer();
+  }
+
+  private recordProviderEvent(eventType: string): void {
+    this.providerEventCount += 1;
+    if (this.firstProviderEventAt === null) {
+      this.firstProviderEventAt = Date.now();
+    }
+    debugVoice("voice provider event", {
+      providerId: this.providerId,
+      eventType,
+    });
+  }
+
+  private logSessionDiagnostics(eventType: string, session: Record<string, unknown> | null): void {
+    const modalities = Array.isArray(session?.modalities)
+      ? session.modalities.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    const turnDetection = isRecord(session?.turn_detection) ? session.turn_detection : null;
+    const transcription = isRecord(session?.input_audio_transcription)
+      ? session.input_audio_transcription
+      : null;
+    const tools = Array.isArray(session?.tools) ? session.tools : [];
+    debugVoice("voice session diagnostics", {
+      providerId: this.providerId,
+      eventType,
+      modalities,
+      turnDetectionType: normalizeNonEmptyString(turnDetection?.type),
+      transcriptionModel: normalizeNonEmptyString(transcription?.model),
+      toolCount: tools.length,
+    });
+  }
+
+  private maybeWarnIfProviderStalled(): void {
+    const now = Date.now();
+    if (
+      this.firstAudioSentAt !== null &&
+      !this.firstSpeechAt &&
+      !this.noSpeechWarningEmitted &&
+      this.audioFramesSent >= 25 &&
+      now - this.firstAudioSentAt >= 3_000
+    ) {
+      this.noSpeechWarningEmitted = true;
+      debugVoice("voice provider warning", {
+        providerId: this.providerId,
+        modelId: this.modelId,
+        reason: "no-speech-detected-after-audio-upload",
+        audioFrameCount: this.audioFramesSent,
+        elapsedMs: now - this.firstAudioSentAt,
+      });
+    }
+    if (
+      this.firstSpeechAt !== null &&
+      !this.firstTranscriptAt &&
+      !this.noTranscriptWarningEmitted &&
+      now - this.firstSpeechAt >= 3_000
+    ) {
+      this.noTranscriptWarningEmitted = true;
+      debugVoice("voice provider warning", {
+        providerId: this.providerId,
+        modelId: this.modelId,
+        reason: "speech-detected-without-transcript",
+        elapsedMs: now - this.firstSpeechAt,
+      });
+    }
+    if (
+      this.firstSpeechStoppedAt !== null &&
+      !this.firstResponseCreatedAt &&
+      !this.noResponseWarningEmitted &&
+      now - this.firstSpeechStoppedAt >= 2_000
+    ) {
+      this.noResponseWarningEmitted = true;
+      debugVoice("voice provider warning", {
+        providerId: this.providerId,
+        modelId: this.modelId,
+        reason: "speech-stopped-without-response-created",
+        elapsedMs: now - this.firstSpeechStoppedAt,
+      });
+    }
+    if (
+      this.firstAudioSentAt !== null &&
+      this.firstProviderEventAt !== null &&
+      !this.firstSpeechAt &&
+      !this.bootstrapOnlyWarningEmitted &&
+      this.providerEventCount <= 2 &&
+      now - this.firstAudioSentAt >= 3_000
+    ) {
+      this.bootstrapOnlyWarningEmitted = true;
+      debugVoice("voice provider warning", {
+        providerId: this.providerId,
+        modelId: this.modelId,
+        reason: "bootstrap-events-only-after-audio-upload",
+        audioFrameCount: this.audioFramesSent,
+        providerEventCount: this.providerEventCount,
+        elapsedMs: now - this.firstAudioSentAt,
+      });
+    }
   }
 
   private handleEvent(event: Record<string, unknown>): void {
@@ -527,32 +836,77 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       return;
     }
 
+    this.recordProviderEvent(type);
+    debugVoicePayload("voice provider event payload", event, {
+      providerId: this.providerId,
+      eventType: type,
+    });
+
     switch (type) {
-      case "session.created":
-      case "session.updated":
+      case "session.created": {
+        const session = isRecord(event.session) ? event.session : null;
+        this.logSessionDiagnostics(type, session);
         this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
+        this.maybeWarnIfProviderStalled();
         return;
+      }
+      case "session.updated": {
+        const session = isRecord(event.session) ? event.session : null;
+        this.logSessionDiagnostics(type, session);
+        this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
+        this.maybeWarnIfProviderStalled();
+        return;
+      }
       case "input_audio_buffer.speech_started":
+        if (this.firstSpeechAt === null) {
+          this.firstSpeechAt = Date.now();
+        }
+        this.speechActive = true;
+        this.currentTurnResponseCreated = false;
+        this.currentTurnQuietFrames = 0;
+        this.currentTurnFallbackIssued = false;
+        this.armForceCommitTimer();
         this.emit("state", {
           state: "listening",
           detail: "speech-start",
         } satisfies VoiceStateEvent);
         return;
       case "input_audio_buffer.speech_stopped":
+        if (this.firstSpeechStoppedAt === null) {
+          this.firstSpeechStoppedAt = Date.now();
+        }
+        this.speechActive = false;
+        this.currentTurnQuietFrames = 0;
+        this.clearForceCommitTimer();
         this.emit("state", {
           state: "listening",
           detail: "speech-stop",
         } satisfies VoiceStateEvent);
+        this.maybeWarnIfProviderStalled();
         return;
       case "response.created":
+        if (this.firstResponseCreatedAt === null) {
+          this.firstResponseCreatedAt = Date.now();
+        }
+        this.currentTurnResponseCreated = true;
+        this.clearForceCommitTimer();
         this.emit("state", { state: "responding" } satisfies VoiceStateEvent);
         return;
       case "response.done":
+        this.speechActive = false;
+        this.currentTurnResponseCreated = false;
+        this.currentTurnQuietFrames = 0;
+        this.currentTurnFallbackIssued = false;
+        this.clearForceCommitTimer();
         this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
         return;
       case "conversation.item.input_audio_transcription.delta": {
-        const delta = normalizeNonEmptyString(event.delta);
+        const delta = normalizeTranscriptDelta(event.delta);
         if (delta) {
+          if (this.firstTranscriptAt === null) {
+            this.firstTranscriptAt = Date.now();
+          }
+          debugVoice("voice transcript event", { providerId: this.providerId, eventType: type, role: "user", final: false, textLength: delta.length });
           this.emit("transcript", {
             role: "user",
             text: delta,
@@ -564,6 +918,10 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       case "conversation.item.input_audio_transcription.completed": {
         const transcript = normalizeNonEmptyString(event.transcript);
         if (transcript) {
+          if (this.firstTranscriptAt === null) {
+            this.firstTranscriptAt = Date.now();
+          }
+          debugVoice("voice transcript event", { providerId: this.providerId, eventType: type, role: "user", final: true, textLength: transcript.length });
           this.emit("transcript", {
             role: "user",
             text: transcript,
@@ -573,8 +931,12 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         return;
       }
       case "response.audio_transcript.delta": {
-        const delta = normalizeNonEmptyString(event.delta);
+        const delta = normalizeTranscriptDelta(event.delta);
         if (delta) {
+          if (this.firstTranscriptAt === null) {
+            this.firstTranscriptAt = Date.now();
+          }
+          debugVoice("voice transcript event", { providerId: this.providerId, eventType: type, role: "assistant", final: false, textLength: delta.length });
           this.emit("transcript", {
             role: "assistant",
             text: delta,
@@ -586,6 +948,10 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       case "response.audio_transcript.done": {
         const transcript = normalizeNonEmptyString(event.transcript);
         if (transcript) {
+          if (this.firstTranscriptAt === null) {
+            this.firstTranscriptAt = Date.now();
+          }
+          debugVoice("voice transcript event", { providerId: this.providerId, eventType: type, role: "assistant", final: true, textLength: transcript.length });
           this.emit("transcript", {
             role: "assistant",
             text: transcript,
@@ -597,7 +963,15 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       case "response.audio.delta": {
         const delta = normalizeNonEmptyString(event.delta);
         if (delta) {
-          this.emit("audio", Buffer.from(delta, "base64"));
+          const chunk = Buffer.from(delta, "base64");
+          if (this.firstAudioResponseAt === null) {
+            this.firstAudioResponseAt = Date.now();
+          }
+          debugVoice("voice provider audio", {
+            providerId: this.providerId,
+            byteLength: chunk.byteLength,
+          });
+          this.emit("audio", chunk);
         }
         return;
       }
@@ -662,6 +1036,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         } satisfies VoiceErrorEvent);
         return;
       default:
+        this.maybeWarnIfProviderStalled();
         return;
     }
   }
@@ -670,10 +1045,18 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return;
     }
+    debugVoice("voice websocket send", {
+      providerId: this.providerId,
+      frameType: normalizeNonEmptyString(payload.type) ?? "unknown",
+      summary: summarizeVoiceDebugPayload(payload),
+    });
+    debugVoicePayload("voice websocket send payload", payload, {
+      providerId: this.providerId,
+      frameType: normalizeNonEmptyString(payload.type) ?? "unknown",
+    });
     this.ws.send(JSON.stringify(payload));
   }
 }
-
 class GeminiLiveVoiceAdapter extends VoiceAdapter {
   private ws: WebSocket | null = null;
 
@@ -688,8 +1071,22 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
       normalizeNonEmptyString(options.provider.websocketUrl) ??
       `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
+    const connectStartedAt = Date.now();
+    debugVoice("voice provider connect start", {
+      providerId: options.providerId,
+      modelId: options.modelId,
+      url: websocketUrl,
+    });
     this.emit("state", { state: "connecting" } satisfies VoiceStateEvent);
     this.ws = await createWebSocket(websocketUrl, options.provider.headers ?? {});
+    debugVoice("voice provider connect complete", {
+      providerId: options.providerId,
+      modelId: options.modelId,
+      url: websocketUrl,
+      elapsedMs: voiceDebugElapsedMs(connectStartedAt),
+      toolCount: options.tools.length,
+      historyCount: options.history.length,
+    });
     this.ws.on("message", (data, isBinary) => {
       if (isBinary) {
         return;
@@ -734,11 +1131,22 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
         },
       };
     }
+    debugVoice("voice provider bootstrap", {
+      providerId: options.providerId,
+      modelId: options.modelId,
+      toolCount: options.tools.length,
+      historyCount: options.history.length,
+    });
     this.sendJson({ setup });
     this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
   }
 
   sendAudio(audio: Buffer): void {
+    debugVoice("voice websocket send", {
+      providerId: "gemini-live",
+      frameType: "realtimeInput.mediaChunks",
+      byteLength: audio.byteLength,
+    });
     this.sendJson({
       realtimeInput: {
         mediaChunks: [
@@ -793,11 +1201,20 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
   }
 
   close(): void {
+    debugVoice("voice provider close", { providerId: "gemini-live" });
     this.ws?.close();
     this.ws = null;
   }
 
   private handleEvent(event: Record<string, unknown>): void {
+    debugVoice("voice provider event", {
+      providerId: "gemini-live",
+      eventType: Object.keys(event).sort().join(",") || "unknown",
+    });
+    debugVoicePayload("voice provider event payload", event, {
+      providerId: "gemini-live",
+    });
+
     if ("setupComplete" in event) {
       this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
     }
@@ -853,7 +1270,12 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
         if (!data) {
           continue;
         }
-        this.emit("audio", Buffer.from(data, "base64"));
+        const chunk = Buffer.from(data, "base64");
+        debugVoice("voice provider audio", {
+          providerId: "gemini-live",
+          byteLength: chunk.byteLength,
+        });
+        this.emit("audio", chunk);
       }
     }
 
@@ -889,9 +1311,18 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return;
     }
+    debugVoice("voice websocket send", {
+      providerId: "gemini-live",
+      frameType: Object.keys(payload).sort().join(",") || "unknown",
+      summary: summarizeVoiceDebugPayload(payload),
+    });
+    debugVoicePayload("voice websocket send payload", payload, {
+      providerId: "gemini-live",
+    });
     this.ws.send(JSON.stringify(payload));
   }
 }
+
 export type VoiceSessionOrchestratorOptions = {
   adapter: VoiceAdapter;
   toolRuntime: VoiceToolRuntime;
@@ -1009,10 +1440,36 @@ export class VoiceSessionOrchestrator extends EventEmitter {
   }
 
   private async handleToolCall(call: VoiceToolCallEvent): Promise<void> {
+    const startedAt = Date.now();
+    debugVoice("voice tool execution", {
+      sessionKey: this.options.sessionKey,
+      providerId: this.options.providerId,
+      callId: call.callId,
+      name: call.name,
+      state: "start",
+    });
     let result: VoiceToolResultEvent;
     try {
       result = await this.options.toolRuntime.execute(call);
+      debugVoice("voice tool execution", {
+        sessionKey: this.options.sessionKey,
+        providerId: this.options.providerId,
+        callId: call.callId,
+        name: call.name,
+        state: "complete",
+        elapsedMs: voiceDebugElapsedMs(startedAt),
+        outputLength: result.output.length,
+      });
     } catch (cause) {
+      debugVoice("voice tool execution", {
+        sessionKey: this.options.sessionKey,
+        providerId: this.options.providerId,
+        callId: call.callId,
+        name: call.name,
+        state: "error",
+        elapsedMs: voiceDebugElapsedMs(startedAt),
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
       result = {
         ...call,
         output: JSON.stringify({ status: "error", error: String(cause) }),
@@ -1034,13 +1491,18 @@ export class VoiceSessionOrchestrator extends EventEmitter {
     }
     const text = event.text.trim();
     if (!text) {
+      debugVoice("voice transcript persist skipped", { providerId: this.options.providerId, sessionKey: this.options.sessionKey, role: event.role, reason: "empty" });
       return;
     }
     const cacheKey = `${event.role}:${text}`;
     if (this.finalTurnCache.has(cacheKey)) {
+      debugVoice("voice transcript persist skipped", { providerId: this.options.providerId, sessionKey: this.options.sessionKey, role: event.role, reason: "duplicate", textLength: text.length });
       return;
     }
     this.finalTurnCache.add(cacheKey);
+    const startedAt = Date.now();
+    debugVoice("voice transcript persist", { providerId: this.options.providerId, sessionKey: this.options.sessionKey, role: event.role, textLength: text.length, state: "start" });
+    debugVoicePayload("voice transcript persist payload", { ...event, text }, { providerId: this.options.providerId, sessionKey: this.options.sessionKey });
     await appendVoiceTranscriptMessage({
       sessionKey: this.options.sessionKey,
       role: event.role,
@@ -1049,6 +1511,7 @@ export class VoiceSessionOrchestrator extends EventEmitter {
       modelId: this.options.modelId,
       agentId: this.options.agentId,
     });
+    debugVoice("voice transcript persist", { providerId: this.options.providerId, sessionKey: this.options.sessionKey, role: event.role, textLength: text.length, state: "complete", elapsedMs: voiceDebugElapsedMs(startedAt) });
   }
 }
 
@@ -1117,3 +1580,4 @@ export async function createVoiceSessionRuntime(params: {
     },
   };
 }
+

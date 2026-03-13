@@ -1038,6 +1038,8 @@ export function renderApp(state: AppViewState) {
                 voiceError: state.voiceError,
                 voiceUserTranscript: state.voiceUserTranscript,
                 voiceAssistantTranscript: state.voiceAssistantTranscript,
+                voiceProvider: state.voiceProvider,
+                voiceVolume: state.voiceVolume,
                 onVoiceConnect: () => state.handleVoiceConnect(),
                 onVoiceDisconnect: () => void state.handleVoiceDisconnect(),
                 onVoiceInterrupt: () => state.handleVoiceInterrupt(),
