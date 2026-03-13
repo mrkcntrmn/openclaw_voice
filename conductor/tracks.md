@@ -4,5 +4,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [~] **Track: We need to debug and improve the voice agent workflow end to end**
+- [x] **Track: We need to debug and improve the voice agent workflow end to end**
 *Link: [./tracks/voice_agent_debug_20260313/](./tracks/voice_agent_debug_20260313/)*
