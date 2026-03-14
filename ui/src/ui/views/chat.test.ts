@@ -215,6 +215,38 @@ describe("chat view", () => {
       "chat-voice-rail",
     ]);
     expect(container.querySelector(".chat-voice-rail .voice-panel")).not.toBeNull();
+    expect(container.querySelector(".voice-panel__transcript")).toBeNull();
+    expect(container.querySelector(".voice-panel__text")).toBeNull();
+  });
+
+  it("renders live voice turns inline in the chat thread", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          voiceLiveUserTurn: {
+            text: "Testing one two",
+            final: false,
+            startedAt: 1000,
+            updatedAt: 1001,
+          },
+          voiceLiveAssistantTurn: {
+            text: "I can hear you.",
+            final: true,
+            startedAt: 1002,
+            updatedAt: 1003,
+          },
+        }),
+      ),
+      container,
+    );
+
+    const liveBubbles = Array.from(container.querySelectorAll(".chat-bubble.voice-live"));
+    expect(liveBubbles).toHaveLength(2);
+    expect(liveBubbles[0]?.textContent).toContain("Testing one two");
+    expect(liveBubbles[0]?.className).toContain("voice-live-pending");
+    expect(liveBubbles[1]?.textContent).toContain("I can hear you.");
+    expect(liveBubbles[1]?.className).toContain("voice-live-final");
   });
 
   it("shows a new session button when aborting is unavailable", () => {

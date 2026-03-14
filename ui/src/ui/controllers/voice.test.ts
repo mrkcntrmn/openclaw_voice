@@ -17,6 +17,7 @@ import {
 
 const wsInstances: FakeWebSocket[] = [];
 const workletInstances: FakeAudioWorkletNode[] = [];
+const playbackSampleRates: number[] = [];
 
 class FakeTrack {
   stopped = false;
@@ -74,6 +75,7 @@ class FakeAudioContext {
   }
 
   createBuffer(_channels: number, length: number, sampleRate: number) {
+    playbackSampleRates.push(sampleRate);
     return {
       duration: length / sampleRate,
       copyToChannel: vi.fn(),
@@ -216,7 +218,7 @@ function createBootstrapResponse(overrides: Record<string, unknown> = {}) {
     modelId: "gpt-4o-realtime-preview",
     transport: {
       wsPath: "/voice/ws",
-      sampleRateHz: 16000,
+      sampleRateHz: 24000,
       channels: 1,
       frameDurationMs: 20,
     },
@@ -250,8 +252,8 @@ function createHost(overrides: Record<string, unknown> = {}) {
     voiceConnected: false,
     voiceStatus: null,
     voiceError: null,
-    voiceUserTranscript: null,
-    voiceAssistantTranscript: null,
+    voiceLiveUserTurn: null,
+    voiceLiveAssistantTurn: null,
     voiceSessionKey: null,
     voiceProvider: null,
     voiceVolume: 0,
@@ -264,6 +266,7 @@ function createHost(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   wsInstances.length = 0;
   workletInstances.length = 0;
+  playbackSampleRates.length = 0;
   chatMocks.loadChatHistory.mockReset();
   vi.useFakeTimers();
 });
@@ -357,6 +360,9 @@ describe("handleVoiceConnect", () => {
         sessionKey: "voice:browser:1",
         provider: "openai-realtime",
         modelId: "gpt-4o-realtime-preview",
+        transport: {
+          sampleRateHz: 24000,
+        },
       }),
     );
     expect(host.voiceConnecting).toBe(false);
@@ -365,26 +371,26 @@ describe("handleVoiceConnect", () => {
     expect(host.voiceSessionKey).toBe("voice:browser:1");
 
     ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "Good", final: false }));
-    expect(host.voiceUserTranscript).toBe("Good");
+    expect(host.voiceLiveUserTurn).toMatchObject({ text: "Good", final: false });
     ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: " morning", final: false }));
-    expect(host.voiceUserTranscript).toBe("Good morning");
+    expect(host.voiceLiveUserTurn).toMatchObject({ text: "Good morning", final: false });
     ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "good morning", final: true }));
     ws?.emitMessage(
       JSON.stringify({ type: "transcript", role: "assistant", text: "Hi", final: false }),
     );
-    expect(host.voiceAssistantTranscript).toBe("Hi");
+    expect(host.voiceLiveAssistantTurn).toMatchObject({ text: "Hi", final: false });
     ws?.emitMessage(
       JSON.stringify({ type: "transcript", role: "assistant", text: " there", final: false }),
     );
-    expect(host.voiceAssistantTranscript).toBe("Hi there");
+    expect(host.voiceLiveAssistantTurn).toMatchObject({ text: "Hi there", final: false });
     ws?.emitMessage(
       JSON.stringify({ type: "transcript", role: "assistant", text: "hi there", final: true }),
     );
     vi.advanceTimersByTime(181);
     await Promise.resolve();
 
-    expect(host.voiceUserTranscript).toBe("good morning");
-    expect(host.voiceAssistantTranscript).toBe("hi there");
+    expect(host.voiceLiveUserTurn).toMatchObject({ text: "good morning", final: true });
+    expect(host.voiceLiveAssistantTurn).toMatchObject({ text: "hi there", final: true });
     expect(host.requestUpdate).toHaveBeenCalled();
     expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(1);
     expect(chatMocks.loadChatHistory).toHaveBeenNthCalledWith(1, host, { sessionKey: "voice:browser:1" });
@@ -396,14 +402,100 @@ describe("handleVoiceConnect", () => {
 
     ws?.emitMessage(JSON.stringify({ type: "tool_result", name: "session_status" }));
     vi.advanceTimersByTime(181);
-    await Promise.resolve();
-    expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(2);
+    });
     expect(chatMocks.loadChatHistory).toHaveBeenNthCalledWith(2, host, { sessionKey: "voice:browser:1" });
 
     await handleVoiceDisconnect(host as never);
     expect(host.voiceConnected).toBe(false);
     expect(host.voiceHandle).toBeNull();
     expect(ws?.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  it("uses ready transport sample rate for playback instead of the bootstrap fallback", async () => {
+    installBrowserVoiceGlobals();
+    const host = createHost({
+      client: {
+        request: vi.fn(async () =>
+          createBootstrapResponse({
+            transport: {
+              wsPath: "/voice/ws",
+              sampleRateHz: 16000,
+              channels: 1,
+              frameDurationMs: 20,
+            },
+          }),
+        ),
+      },
+    });
+
+    await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+        transport: {
+          sampleRateHz: 24000,
+        },
+      }),
+    );
+    ws?.emitMessage(new Int16Array([1, 2, 3, 4]).buffer);
+
+    expect(playbackSampleRates).toContain(24000);
+    expect(playbackSampleRates).not.toContain(16000);
+  });
+
+  it("coalesces overlapping history refreshes and clears finalized live turns after persistence", async () => {
+    installBrowserVoiceGlobals();
+    let releaseRefresh: (() => void) | null = null;
+    chatMocks.loadChatHistory.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseRefresh = () => {
+            resolve();
+          };
+        }),
+    );
+    const host = createHost();
+
+    await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+        transport: {
+          sampleRateHz: 24000,
+        },
+      }),
+    );
+
+    ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "hello", final: true }));
+    vi.advanceTimersByTime(181);
+    await Promise.resolve();
+    expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(1);
+
+    ws?.emitMessage(JSON.stringify({ type: "transcript", role: "assistant", text: "hi", final: true }));
+    vi.advanceTimersByTime(181);
+    await Promise.resolve();
+    expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(1);
+
+    host.chatMessages = [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      { role: "assistant", content: [{ type: "text", text: "hi" }] },
+    ];
+    releaseRefresh?.();
+    await vi.waitFor(() => {
+      expect(chatMocks.loadChatHistory).toHaveBeenCalledTimes(2);
+    });
+    expect(host.voiceLiveUserTurn).toBeNull();
+    expect(host.voiceLiveAssistantTurn).toBeNull();
   });
 
   it("boots the voice session before requesting microphone access", async () => {

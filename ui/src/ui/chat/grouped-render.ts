@@ -229,6 +229,12 @@ function renderGroupedMessage(
 ) {
   const m = message as Record<string, unknown>;
   const role = typeof m.role === "string" ? m.role : "unknown";
+  const marker =
+    typeof m.__openclaw === "object" && m.__openclaw !== null
+      ? (m.__openclaw as Record<string, unknown>)
+      : null;
+  const isVoiceLive = marker?.kind === "voice-live";
+  const isVoiceLiveFinal = marker?.final === true;
   const isToolResult =
     isToolResultMessage(message) ||
     role.toLowerCase() === "toolresult" ||
@@ -253,6 +259,8 @@ function renderGroupedMessage(
     "chat-bubble",
     canCopyMarkdown ? "has-copy" : "",
     opts.isStreaming ? "streaming" : "",
+    isVoiceLive ? "voice-live" : "",
+    isVoiceLive ? (isVoiceLiveFinal ? "voice-live-final" : "voice-live-pending") : "",
     "fade-in",
   ]
     .filter(Boolean)

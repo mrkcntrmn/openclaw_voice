@@ -56,39 +56,46 @@ vi.mock("../voice/runtime.js", () => {
     cfg?: { voice?: unknown };
     voice?: unknown;
     providerId?: string;
-  }) => ({
-    cfg: params.cfg ?? {},
-    voice:
-      (params.voice as Record<string, unknown> | undefined) ??
-      (params.cfg?.voice as Record<string, unknown> | undefined) ??
-      {},
-    providerId: params.providerId ?? "openai-realtime",
-    provider: { apiKey: "test-api-key" },
-    modelId: "gpt-4o-realtime-preview",
-    browser: {
-      enabled: true,
-      wsPath: "/voice/ws",
-      sampleRateHz: 16000,
-      channels: 1,
-      frameDurationMs: 20,
-      authTimeoutMs: 10000,
-    },
-    session: {
-      interruptOnSpeech: true,
-      pauseOnToolCall: true,
-      persistTranscripts: true,
-      sharedChatHistory: true,
-      transcriptSource: "provider" as const,
-      sessionKeyPrefix: "voice",
-    },
-    deployment: {
-      websocket: {
-        maxSessionMinutes: runtimeMockState.maxSessionMinutes,
+  }) => {
+    const providerId = params.providerId ?? "openai-realtime";
+    const sampleRateHz = providerId === "gemini-live" ? 16000 : 24000;
+    return {
+      cfg: params.cfg ?? {},
+      voice:
+        (params.voice as Record<string, unknown> | undefined) ??
+        (params.cfg?.voice as Record<string, unknown> | undefined) ??
+        {},
+      providerId,
+      provider: { apiKey: "test-api-key" },
+      modelId:
+        providerId === "gemini-live" ? "gemini-2.0-flash-exp" : "gpt-4o-realtime-preview",
+      browser: {
+        enabled: true,
+        wsPath: "/voice/ws",
+        sampleRateHz,
+        channels: 1,
+        frameDurationMs: 20,
+        authTimeoutMs: 10000,
       },
-    },
-  }));
+      session: {
+        interruptOnSpeech: true,
+        pauseOnToolCall: true,
+        persistTranscripts: true,
+        sharedChatHistory: true,
+        transcriptSource: "provider" as const,
+        sessionKeyPrefix: "voice",
+      },
+      deployment: {
+        websocket: {
+          maxSessionMinutes: runtimeMockState.maxSessionMinutes,
+        },
+      },
+    };
+  });
 
   const createVoiceSessionRuntime = vi.fn(async (options: Record<string, unknown>) => {
+    const providerId = typeof options.providerId === "string" ? options.providerId : "openai-realtime";
+    const sampleRateHz = providerId === "gemini-live" ? 16000 : 24000;
     const orchestrator = new EventEmitter() as MockOrchestrator;
     orchestrator.audioFrames = [];
     orchestrator.texts = [];
@@ -111,11 +118,15 @@ vi.mock("../voice/runtime.js", () => {
 
     const runtime = {
       resolved: {
-        providerId: typeof options.providerId === "string" ? options.providerId : "openai-realtime",
+        providerId,
         modelId:
-          typeof options.modelId === "string" ? options.modelId : "gpt-4o-realtime-preview",
+          typeof options.modelId === "string"
+            ? options.modelId
+            : providerId === "gemini-live"
+              ? "gemini-2.0-flash-exp"
+              : "gpt-4o-realtime-preview",
         browser: {
-          sampleRateHz: 16000,
+          sampleRateHz,
           channels: 1,
           frameDurationMs: 20,
         },
@@ -193,7 +204,7 @@ async function writeVoiceConfig(extra: Record<string, unknown> = {}): Promise<vo
       browser: {
         enabled: true,
         wsPath: "/voice/ws",
-        sampleRateHz: 16000,
+        sampleRateHz: 24000,
         channels: 1,
         frameDurationMs: 20,
         ...extraBrowser,
@@ -315,8 +326,47 @@ describe("gateway browser voice", () => {
         modelId: "gpt-4o-realtime-preview",
         transport: {
           wsPath: "/voice/ws",
-          sampleRateHz: 16000,
+          sampleRateHz: 24000,
           frameDurationMs: 20,
+        },
+      });
+    } finally {
+      ws.close();
+    }
+  });
+
+  it("keeps Gemini browser transport at 16 kHz", async () => {
+    await writeVoiceConfig({
+      voice: {
+        provider: "gemini-live",
+        providers: {
+          "gemini-live": {
+            apiKey: "test-api-key",
+            modelId: "gemini-2.0-flash-exp",
+          },
+        },
+      },
+    });
+
+    const ws = await openGatewayWs(startedServer.port);
+    try {
+      const connect = await connectReq(ws, { scopes: ["operator.read"] });
+      expect(connect.ok).toBe(true);
+
+      const response = await rpcReq<{
+        provider?: string;
+        modelId?: string;
+        transport?: { sampleRateHz?: number };
+      }>(ws, "voice.session.create", {
+        provider: "gemini-live",
+      });
+
+      expect(response.ok).toBe(true);
+      expect(response.payload).toMatchObject({
+        provider: "gemini-live",
+        modelId: "gemini-2.0-flash-exp",
+        transport: {
+          sampleRateHz: 16000,
         },
       });
     } finally {
@@ -414,6 +464,9 @@ describe("gateway browser voice", () => {
         sessionKey: "voice:test-session",
         provider: "openai-realtime",
         modelId: "gpt-4o-realtime-preview",
+        transport: {
+          sampleRateHz: 24000,
+        },
       });
       expect(runtimeMockState.runtimes).toHaveLength(1);
       expect(runtimeMockState.runtimes[0]?.options).toMatchObject({
@@ -472,6 +525,9 @@ describe("gateway browser voice", () => {
         type: "ready",
         sessionKey: "voice:browser:raw-auth",
         provider: "openai-realtime",
+        transport: {
+          sampleRateHz: 24000,
+        },
       });
       expect(runtimeMockState.runtimes).toHaveLength(1);
       expect(runtimeMockState.runtimes[0]?.options).toMatchObject({

@@ -34,6 +34,7 @@ import {
   handleVoiceDisconnect as handleVoiceDisconnectInternal,
   handleVoiceInterrupt as handleVoiceInterruptInternal,
   type VoiceSessionHandle,
+  type VoiceLiveTurn,
 } from "./controllers/voice.ts";
 import {
   exportLogs as exportLogsInternal,
@@ -176,8 +177,8 @@ export class OpenClawApp extends LitElement {
   @state() voiceConnected = false;
   @state() voiceStatus: string | null = null;
   @state() voiceError: string | null = null;
-  @state() voiceUserTranscript: string | null = null;
-  @state() voiceAssistantTranscript: string | null = null;
+  @state() voiceLiveUserTurn: VoiceLiveTurn | null = null;
+  @state() voiceLiveAssistantTurn: VoiceLiveTurn | null = null;
   @state() voiceSessionKey: string | null = null;
   @state() voiceProvider: string | null = null;
   @state() voiceVolume = 0;
@@ -673,7 +674,6 @@ export class OpenClawApp extends LitElement {
     return renderApp(this as unknown as AppViewState);
   }
 }
-
 
 
 

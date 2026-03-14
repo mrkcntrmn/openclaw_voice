@@ -82,7 +82,7 @@ describe("voice handler debug logging", () => {
       browser: {
         enabled: true,
         wsPath: "/voice/ws",
-        sampleRateHz: 16000,
+        sampleRateHz: 24000,
         channels: 1,
         frameDurationMs: 20,
       },

@@ -6,7 +6,9 @@ import {
   renderReadingIndicatorGroup,
   renderStreamingGroup,
 } from "../chat/grouped-render.ts";
+import { extractText } from "../chat/message-extract.ts";
 import { normalizeMessage, normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
+import type { VoiceLiveTurn } from "../controllers/voice.ts";
 import { icons } from "../icons.ts";
 import { detectTextDirection } from "../text-direction.ts";
 import type { SessionsListResult } from "../types.ts";
@@ -65,8 +67,8 @@ export type ChatProps = {
   voiceConnected?: boolean;
   voiceStatus?: string | null;
   voiceError?: string | null;
-  voiceUserTranscript?: string | null;
-  voiceAssistantTranscript?: string | null;
+  voiceLiveUserTurn?: VoiceLiveTurn | null;
+  voiceLiveAssistantTurn?: VoiceLiveTurn | null;
   voiceProvider?: string | null;
   voiceVolume?: number;
   // Focus mode
@@ -268,8 +270,6 @@ function renderVoicePanel(props: ChatProps) {
   const voiceConnected = props.voiceConnected ?? false;
   const voiceStatus = props.voiceStatus ?? null;
   const voiceError = props.voiceError ?? null;
-  const voiceUserTranscript = props.voiceUserTranscript ?? null;
-  const voiceAssistantTranscript = props.voiceAssistantTranscript ?? null;
   const voiceProvider = props.voiceProvider ?? null;
   const voiceVolume = props.voiceVolume ?? 0;
   const providerLabel = voiceProvider ?? voiceConfigProvider;
@@ -332,16 +332,6 @@ function renderVoicePanel(props: ChatProps) {
           >
             Interrupt
           </button>
-        </div>
-      </div>
-      <div class="voice-panel__transcripts">
-        <div class="voice-panel__transcript">
-          <span class="voice-panel__label">You</span>
-          <span class="voice-panel__text">${voiceUserTranscript ?? "Waiting for speech…"}</span>
-        </div>
-        <div class="voice-panel__transcript">
-          <span class="voice-panel__label">Assistant</span>
-          <span class="voice-panel__text">${voiceAssistantTranscript ?? "No reply yet."}</span>
         </div>
       </div>
       ${availabilityHint ? html`<div class="voice-panel__hint">${availabilityHint}</div>` : nothing}
@@ -731,7 +721,77 @@ function buildChatItems(props: ChatProps): Array<ChatItem | MessageGroup> {
     }
   }
 
+  const liveVoiceTurns = [
+    createVoiceLiveChatItem(history, "user", props.voiceLiveUserTurn ?? null),
+    createVoiceLiveChatItem(history, "assistant", props.voiceLiveAssistantTurn ?? null),
+  ]
+    .filter((item): item is ChatItem => item !== null)
+    .sort((left, right) => {
+      const leftTimestamp = readChatItemTimestamp(left);
+      const rightTimestamp = readChatItemTimestamp(right);
+      if (leftTimestamp !== rightTimestamp) {
+        return leftTimestamp - rightTimestamp;
+      }
+      const leftRole = normalizeRoleForGrouping((left.message as { role?: string }).role ?? "");
+      const rightRole = normalizeRoleForGrouping((right.message as { role?: string }).role ?? "");
+      if (leftRole === rightRole) {
+        return 0;
+      }
+      return leftRole === "user" ? -1 : 1;
+    });
+  items.push(...liveVoiceTurns);
+
   return groupMessages(items);
+}
+
+function createVoiceLiveChatItem(
+  history: unknown[],
+  role: "user" | "assistant",
+  turn: VoiceLiveTurn | null,
+): ChatItem | null {
+  if (!turn || !turn.text.trim()) {
+    return null;
+  }
+  if (turn.final && historyContainsVoiceTurn(history, role, turn.text)) {
+    return null;
+  }
+  return {
+    kind: "message",
+    key: `voice-live:${role}:${turn.startedAt}:${turn.updatedAt}`,
+    message: {
+      role,
+      senderLabel: role === "user" ? "You" : undefined,
+      content: [{ type: "text", text: turn.text }],
+      timestamp: turn.startedAt,
+      __openclaw: {
+        kind: "voice-live",
+        final: turn.final,
+      },
+    },
+  };
+}
+
+function historyContainsVoiceTurn(
+  history: unknown[],
+  role: "user" | "assistant",
+  text: string,
+): boolean {
+  const normalizedText = text.trim();
+  if (!normalizedText) {
+    return false;
+  }
+  return history.some((message) => {
+    if (typeof message !== "object" || message === null) {
+      return false;
+    }
+    const typed = message as Record<string, unknown>;
+    return typed.role === role && extractText(message)?.trim() === normalizedText;
+  });
+}
+
+function readChatItemTimestamp(item: ChatItem): number {
+  const message = item.message as { timestamp?: unknown };
+  return typeof message.timestamp === "number" ? message.timestamp : Number.MAX_SAFE_INTEGER;
 }
 
 function messageKey(message: unknown, index: number): string {

@@ -268,6 +268,19 @@ img.chat-avatar {
   background: rgba(255, 77, 77, 0.15);
 }
 
+.chat-bubble.voice-live {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.chat-bubble.voice-live-pending {
+  animation: pulsing-border 1.2s ease-out infinite;
+}
+
+.chat-bubble.voice-live-final {
+  border-style: dashed;
+}
+
 /* Streaming animation */
 .chat-bubble.streaming {
   animation: pulsing-border 1.5s ease-out infinite;

@@ -12,6 +12,7 @@ import { coerceSecretRef } from "./types.secrets.js";
 export const DEFAULT_VOICE_PROVIDER = "openai-realtime";
 export const DEFAULT_VOICE_BROWSER_WS_PATH = "/voice/ws";
 export const DEFAULT_VOICE_SAMPLE_RATE_HZ = 16000;
+export const DEFAULT_OPENAI_REALTIME_SAMPLE_RATE_HZ = 24000;
 export const DEFAULT_VOICE_FRAME_DURATION_MS = 20;
 export const DEFAULT_VOICE_SESSION_KEY_PREFIX = "voice";
 export const VOICE_CALL_PLUGIN_CONFIG_DEPRECATED_MESSAGE =
@@ -65,6 +66,16 @@ function normalizeVoiceSecretInput(value: unknown): TalkProviderConfig["apiKey"]
     return trimmed.length > 0 ? trimmed : undefined;
   }
   return coerceSecretRef(value) ?? undefined;
+}
+
+export function defaultVoiceSampleRateHzForProvider(
+  providerId: string | null | undefined,
+): number {
+  const normalized = normalizeString(providerId)?.toLowerCase();
+  if (normalized?.includes("openai")) {
+    return DEFAULT_OPENAI_REALTIME_SAMPLE_RATE_HZ;
+  }
+  return DEFAULT_VOICE_SAMPLE_RATE_HZ;
 }
 
 function normalizeVoiceProviderConfig(value: unknown): VoiceProviderConfig | undefined {
@@ -536,12 +547,13 @@ function buildVoiceConfigFromTalk(talk: TalkConfig | undefined): VoiceConfig | u
   if (!talk) {
     return undefined;
   }
+  const providerId = talk.provider ?? DEFAULT_VOICE_PROVIDER;
   return normalizeVoiceSection({
     provider: talk.provider,
     providers: talk.providers ? Object.fromEntries(Object.entries(talk.providers).map(([providerId, provider]) => [providerId, { ...provider }])) : undefined,
     browser: {
       wsPath: DEFAULT_VOICE_BROWSER_WS_PATH,
-      sampleRateHz: DEFAULT_VOICE_SAMPLE_RATE_HZ,
+      sampleRateHz: defaultVoiceSampleRateHzForProvider(providerId),
       channels: 1,
       frameDurationMs: DEFAULT_VOICE_FRAME_DURATION_MS,
       vad: "provider",
@@ -554,7 +566,7 @@ function buildVoiceConfigFromTalk(talk: TalkConfig | undefined): VoiceConfig | u
       transcriptSource: "provider",
       sessionKeyPrefix: DEFAULT_VOICE_SESSION_KEY_PREFIX,
     },
-  }, talk.provider ?? DEFAULT_VOICE_PROVIDER);
+  }, providerId);
 }
 
 function hasDeprecatedVoiceCallPluginConfig(

@@ -1,4 +1,5 @@
 import { loadChatHistory } from "./chat.ts";
+import { extractText } from "../chat/message-extract.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { UiSettings } from "../storage.ts";
 import { AudioCapture } from "./audio-capture.ts";
@@ -18,6 +19,13 @@ const VOICE_AUDIO_SILENCE_WARNING_FRAME_COUNT = 60;
 const VOICE_AUDIO_SILENCE_RMS_THRESHOLD = 0.01;
 const VOICE_AUDIO_ACTIVITY_VOLUME_THRESHOLD = 0.01;
 const VOICE_NO_TRANSCRIPT_WARNING_MS = 5_000;
+
+export type VoiceLiveTurn = {
+  text: string;
+  final: boolean;
+  startedAt: number;
+  updatedAt: number;
+};
 
 type VoiceSessionBootstrapResponse = {
   ticket?: string;
@@ -69,6 +77,11 @@ type VoiceServerControlFrame =
       sessionKey?: string;
       provider?: string;
       modelId?: string;
+      transport?: {
+        sampleRateHz?: number;
+        channels?: number;
+        frameDurationMs?: number;
+      };
     }
   | { type: "state"; state?: string; detail?: string }
   | { type: "transcript"; role?: string; text?: string; final?: boolean }
@@ -105,8 +118,8 @@ type VoiceHost = {
   voiceConnected: boolean;
   voiceStatus: string | null;
   voiceError: string | null;
-  voiceUserTranscript: string | null;
-  voiceAssistantTranscript: string | null;
+  voiceLiveUserTurn: VoiceLiveTurn | null;
+  voiceLiveAssistantTurn: VoiceLiveTurn | null;
   voiceSessionKey: string | null;
   voiceProvider: string | null;
   voiceVolume: number;
@@ -354,39 +367,128 @@ async function createVoiceSessionBootstrap(host: VoiceHost): Promise<VoiceSessio
   return isRecord(response) ? response : null;
 }
 
-function scheduleHistoryRefresh(host: VoiceHost, timerRef: { value: number | null }) {
-  debugVoice("voice history refresh", {
-    sessionKey: host.voiceSessionKey ?? host.sessionKey,
-    state: "scheduled",
-  });
-  if (timerRef.value !== null) {
-    window.clearTimeout(timerRef.value);
+type HistoryRefreshState = {
+  timer: number | null;
+  inFlight: boolean;
+  pending: boolean;
+  disposed: boolean;
+};
+
+type TranscriptBufferState = {
+  user: string;
+  assistant: string;
+  userStartedAt: number | null;
+  assistantStartedAt: number | null;
+};
+
+function isPersistedVoiceTurn(
+  host: Pick<VoiceHost, "chatMessages">,
+  role: "user" | "assistant",
+  text: string,
+): boolean {
+  const normalizedText = text.trim();
+  if (!normalizedText) {
+    return false;
   }
-  timerRef.value = window.setTimeout(() => {
-    timerRef.value = null;
-    const sessionKey = host.voiceSessionKey ?? host.sessionKey;
-    debugVoice("voice history refresh", {
-      sessionKey,
-      state: "running",
-    });
-    void loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0], { sessionKey })
-      .then(() => {
-        debugVoice("voice history refresh", {
-          sessionKey,
-          state: "complete",
-        });
-      })
-      .catch((error) => {
-        debugVoice("voice history refresh", {
-          sessionKey,
-          state: "error",
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }, 180);
+  return host.chatMessages.some((message) => {
+    if (!isRecord(message)) {
+      return false;
+    }
+    const messageRole = normalizeString(message.role);
+    if (messageRole !== role) {
+      return false;
+    }
+    return extractText(message)?.trim() === normalizedText;
+  });
 }
 
-const transcriptBuffers = new WeakMap<VoiceHost, { user: string; assistant: string }>();
+function maybeClearSettledVoiceTurns(host: VoiceHost): void {
+  let changed = false;
+  if (
+    host.voiceLiveUserTurn?.final &&
+    isPersistedVoiceTurn(host, "user", host.voiceLiveUserTurn.text)
+  ) {
+    host.voiceLiveUserTurn = null;
+    changed = true;
+  }
+  if (
+    host.voiceLiveAssistantTurn?.final &&
+    isPersistedVoiceTurn(host, "assistant", host.voiceLiveAssistantTurn.text)
+  ) {
+    host.voiceLiveAssistantTurn = null;
+    changed = true;
+  }
+  if (changed) {
+    notifyVoiceHostUpdated(host);
+  }
+}
+
+function runHistoryRefresh(host: VoiceHost, refreshState: HistoryRefreshState): void {
+  if (refreshState.disposed) {
+    return;
+  }
+  const sessionKey = host.voiceSessionKey ?? host.sessionKey;
+  if (refreshState.inFlight) {
+    refreshState.pending = true;
+    debugVoice("voice history refresh", {
+      sessionKey,
+      state: "coalesced",
+    });
+    return;
+  }
+
+  refreshState.inFlight = true;
+  refreshState.pending = false;
+  debugVoice("voice history refresh", {
+    sessionKey,
+    state: "running",
+  });
+  void loadChatHistory(host as unknown as Parameters<typeof loadChatHistory>[0], { sessionKey })
+    .then(() => {
+      maybeClearSettledVoiceTurns(host);
+      debugVoice("voice history refresh", {
+        sessionKey,
+        state: "complete",
+      });
+    })
+    .catch((error) => {
+      debugVoice("voice history refresh", {
+        sessionKey,
+        state: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      refreshState.inFlight = false;
+      if (refreshState.pending && !refreshState.disposed) {
+        refreshState.pending = false;
+        runHistoryRefresh(host, refreshState);
+      }
+    });
+}
+
+function scheduleHistoryRefresh(
+  host: VoiceHost,
+  refreshState: HistoryRefreshState,
+  immediate = false,
+): void {
+  if (refreshState.disposed) {
+    return;
+  }
+  debugVoice("voice history refresh", {
+    sessionKey: host.voiceSessionKey ?? host.sessionKey,
+    state: immediate ? "queued-immediate" : "scheduled",
+  });
+  if (refreshState.timer !== null) {
+    window.clearTimeout(refreshState.timer);
+  }
+  refreshState.timer = window.setTimeout(() => {
+    refreshState.timer = null;
+    runHistoryRefresh(host, refreshState);
+  }, immediate ? 0 : 180);
+}
+
+const transcriptBuffers = new WeakMap<VoiceHost, TranscriptBufferState>();
 
 function appendTranscriptBuffer(buffer: string, incoming: string): string {
   if (!buffer) {
@@ -397,11 +499,27 @@ function appendTranscriptBuffer(buffer: string, incoming: string): string {
   }
   return `${buffer}${incoming}`;
 }
+
+function buildLiveTurn(text: string, final: boolean, startedAt: number, updatedAt: number): VoiceLiveTurn {
+  return {
+    text,
+    final,
+    startedAt,
+    updatedAt,
+  };
+}
+
 function applyTranscriptUpdate(
   host: VoiceHost,
   params: { role: "user" | "assistant"; text: string; final: boolean },
 ): void {
-  const state = transcriptBuffers.get(host) ?? { user: "", assistant: "" };
+  const state = transcriptBuffers.get(host) ?? {
+    user: "",
+    assistant: "",
+    userStartedAt: null,
+    assistantStartedAt: null,
+  };
+  const now = Date.now();
 
   debugVoice("voice transcript update received", {
     role: params.role,
@@ -415,37 +533,64 @@ function applyTranscriptUpdate(
 
   if (params.role === "user") {
     if (params.final) {
+      const startedAt =
+        state.userStartedAt ??
+        (host.voiceLiveUserTurn && !host.voiceLiveUserTurn.final
+          ? host.voiceLiveUserTurn.startedAt
+          : now);
       state.user = "";
-      state.assistant = "";
-      host.voiceUserTranscript = params.text;
+      state.userStartedAt = null;
+      host.voiceLiveUserTurn = buildLiveTurn(params.text, true, startedAt, now);
       transcriptBuffers.set(host, state);
-      debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceUserTranscript?.length ?? 0, assistantTextLength: host.voiceAssistantTranscript?.length ?? 0 });
+      maybeClearSettledVoiceTurns(host);
+      debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
       notifyVoiceHostUpdated(host);
       return;
     }
+    if (state.userStartedAt === null || host.voiceLiveUserTurn?.final) {
+      state.userStartedAt = now;
+    }
     state.user = appendTranscriptBuffer(state.user, params.text);
-    state.assistant = "";
-    host.voiceUserTranscript = state.user;
-    host.voiceAssistantTranscript = null;
+    if (host.voiceLiveAssistantTurn && !host.voiceLiveAssistantTurn.final) {
+      host.voiceLiveAssistantTurn = null;
+      state.assistant = "";
+      state.assistantStartedAt = null;
+    }
+    host.voiceLiveUserTurn = buildLiveTurn(state.user, false, state.userStartedAt ?? now, now);
     transcriptBuffers.set(host, state);
-    debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceUserTranscript?.length ?? 0, assistantTextLength: host.voiceAssistantTranscript?.length ?? 0 });
+    debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
     notifyVoiceHostUpdated(host);
     return;
   }
 
   if (params.final) {
+    const startedAt =
+      state.assistantStartedAt ??
+      (host.voiceLiveAssistantTurn && !host.voiceLiveAssistantTurn.final
+        ? host.voiceLiveAssistantTurn.startedAt
+        : now);
     state.assistant = "";
-    host.voiceAssistantTranscript = params.text;
+    state.assistantStartedAt = null;
+    host.voiceLiveAssistantTurn = buildLiveTurn(params.text, true, startedAt, now);
     transcriptBuffers.set(host, state);
-    debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceUserTranscript?.length ?? 0, assistantTextLength: host.voiceAssistantTranscript?.length ?? 0 });
+    maybeClearSettledVoiceTurns(host);
+    debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
     notifyVoiceHostUpdated(host);
     return;
   }
 
+  if (state.assistantStartedAt === null || host.voiceLiveAssistantTurn?.final) {
+    state.assistantStartedAt = now;
+  }
   state.assistant = appendTranscriptBuffer(state.assistant, params.text);
-  host.voiceAssistantTranscript = state.assistant;
+  host.voiceLiveAssistantTurn = buildLiveTurn(
+    state.assistant,
+    false,
+    state.assistantStartedAt ?? now,
+    now,
+  );
   transcriptBuffers.set(host, state);
-  debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceUserTranscript?.length ?? 0, assistantTextLength: host.voiceAssistantTranscript?.length ?? 0 });
+  debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
   notifyVoiceHostUpdated(host);
 }
 
@@ -457,8 +602,8 @@ function resetVoiceState(host: VoiceHost, preserveError = false): void {
   host.voiceStatus = null;
   host.voiceSessionKey = null;
   host.voiceProvider = null;
-  host.voiceUserTranscript = null;
-  host.voiceAssistantTranscript = null;
+  host.voiceLiveUserTurn = null;
+  host.voiceLiveAssistantTurn = null;
   host.voiceVolume = 0;
   transcriptBuffers.delete(host);
   if (!preserveError) {
@@ -507,8 +652,8 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
   host.voiceConnecting = true;
   host.voiceError = null;
   host.voiceStatus = "Preparing voice session";
-  host.voiceUserTranscript = null;
-  host.voiceAssistantTranscript = null;
+  host.voiceLiveUserTurn = null;
+  host.voiceLiveAssistantTurn = null;
   host.voiceVolume = 0;
 
   let capture: AudioCapture | null = null;
@@ -524,7 +669,12 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
   let captureSilenceWarningEmitted = false;
   let transcriptReceived = false;
   let transcriptWarningTimer: number | null = null;
-  const refreshTimer = { value: null as number | null };
+  const refreshState: HistoryRefreshState = {
+    timer: null,
+    inFlight: false,
+    pending: false,
+    disposed: false,
+  };
   const pendingFrameStats: Array<Pcm16AudioMetrics & { sequence: number }> = [];
   let outboundAudioFrames = 0;
 
@@ -577,12 +727,13 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
     }
     closing = true;
     streamAudioEnabled = false;
+    refreshState.disposed = true;
 
     resetVoiceState(host, params?.preserveError === true);
 
-    if (refreshTimer.value !== null) {
-      window.clearTimeout(refreshTimer.value);
-      refreshTimer.value = null;
+    if (refreshState.timer !== null) {
+      window.clearTimeout(refreshState.timer);
+      refreshState.timer = null;
     }
     clearTranscriptWarning();
 
@@ -741,15 +892,6 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
       autoGainControl: true,
     });
 
-    playback = new AudioPlayback(sampleRateHz);
-    playback.start();
-    debugVoice("voice playback event", {
-      sessionKey: bootstrapSessionKey,
-      providerId,
-      state: "started",
-      sampleRateHz,
-    });
-
     ws = new WebSocket(buildVoiceWebSocketUrl(host.settings.gatewayUrl, wsPath));
     ws.binaryType = "arraybuffer";
     debugVoice("voice websocket connecting", {
@@ -832,17 +974,33 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
         });
         switch (parsed.type) {
           case "ready": {
+            const readySampleRateHz =
+              typeof parsed.transport?.sampleRateHz === "number"
+                ? parsed.transport.sampleRateHz
+                : sampleRateHz;
             host.voiceConnecting = false;
             host.voiceConnected = true;
             host.voiceProvider = normalizeString(parsed.provider) ?? providerId;
             host.voiceSessionKey = normalizeString(parsed.sessionKey) ?? bootstrapSessionKey;
             host.voiceStatus = "Listening";
             streamAudioEnabled = true;
+            if (playback) {
+              playback.stop();
+            }
+            playback = new AudioPlayback(readySampleRateHz);
+            playback.start();
             scheduleTranscriptWarning();
             debugVoice("voice control frame", {
               frameType: "ready",
               sessionKey: host.voiceSessionKey,
               providerId: host.voiceProvider,
+              sampleRateHz: readySampleRateHz,
+            });
+            debugVoice("voice playback event", {
+              sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
+              providerId: host.voiceProvider ?? providerId,
+              state: "started",
+              sampleRateHz: readySampleRateHz,
             });
             return;
           }
@@ -881,7 +1039,7 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
             });
             applyTranscriptUpdate(host, { role, text, final });
             if (final) {
-              scheduleHistoryRefresh(host, refreshTimer);
+              scheduleHistoryRefresh(host, refreshState);
             }
             return;
           }
@@ -905,7 +1063,7 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
               providerId: host.voiceProvider ?? providerId,
               name,
             });
-            scheduleHistoryRefresh(host, refreshTimer);
+            scheduleHistoryRefresh(host, refreshState);
             return;
           }
           case "error": {

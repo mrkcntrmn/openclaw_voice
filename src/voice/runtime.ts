@@ -23,9 +23,9 @@ import {
   roundVoiceAudioMetric,
 } from "./audio-debug.js";
 import {
+  defaultVoiceSampleRateHzForProvider,
   DEFAULT_VOICE_FRAME_DURATION_MS,
   DEFAULT_VOICE_PROVIDER,
-  DEFAULT_VOICE_SAMPLE_RATE_HZ,
   DEFAULT_VOICE_SESSION_KEY_PREFIX,
   normalizeVoiceSection,
   resolveActiveVoiceProviderConfig,
@@ -39,6 +39,7 @@ import {
 } from "./transcript.js";
 
 const DEFAULT_OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview";
+const DEFAULT_GEMINI_LIVE_MODEL = "gemini-2.0-flash-exp";
 const DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 const DEBUG_OPENAI_FORCE_COMMIT_IDLE_MS = 1_500;
 const DEBUG_OPENAI_FORCE_COMMIT_QUIET_FRAME_COUNT = 60;
@@ -91,9 +92,16 @@ export type VoiceAdapterConnectOptions = {
   provider: VoiceProviderConfig;
   providerId: string;
   modelId: string;
+  sampleRateHz: number;
   instructions: string;
   tools: ToolDefinition[];
   history: VoiceHistoryTurn[];
+};
+
+export type VoiceTransportConfig = {
+  inputSampleRateHz?: number;
+  outputSampleRateHz?: number;
+  sampleRateHz?: number;
 };
 
 export type ResolvedVoiceSessionConfig = {
@@ -153,6 +161,13 @@ function normalizeTranscriptDelta(value: unknown): string | undefined {
     return undefined;
   }
   return value.length > 0 ? value : undefined;
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
 }
 
 function stringifyToolOutput(value: unknown): string {
@@ -291,6 +306,10 @@ export abstract class VoiceAdapter extends EventEmitter {
   abstract sendToolResult(callId: string, output: string, name?: string): void;
   abstract interrupt(): void;
   abstract close(): void;
+
+  getTransportConfig(): VoiceTransportConfig | null {
+    return null;
+  }
 }
 
 function buildVoiceInstructions(params: {
@@ -359,6 +378,40 @@ function defaultTranscriptionModelIdForProvider(providerId: string): string | un
     return DEFAULT_OPENAI_TRANSCRIPTION_MODEL;
   }
   return undefined;
+}
+
+function resolveRealtimeAudioSection(
+  session: Record<string, unknown> | null,
+  direction: "input" | "output",
+): Record<string, unknown> | null {
+  const audio = isRecord(session?.audio) ? session.audio : null;
+  return isRecord(audio?.[direction]) ? audio[direction] : null;
+}
+
+function resolveRealtimeAudioFormat(
+  session: Record<string, unknown> | null,
+  direction: "input" | "output",
+): { type?: string; sampleRateHz?: number } | null {
+  const section = resolveRealtimeAudioSection(session, direction);
+  const format = isRecord(section?.format) ? section.format : null;
+  if (format) {
+    return {
+      type: normalizeNonEmptyString(format.type),
+      sampleRateHz:
+        normalizePositiveInteger(format.rate) ??
+        normalizePositiveInteger(format.sample_rate) ??
+        normalizePositiveInteger(format.sampleRateHz),
+    };
+  }
+
+  const legacyKey = direction === "input" ? "input_audio_format" : "output_audio_format";
+  const legacyFormat = normalizeNonEmptyString(session?.[legacyKey]);
+  if (!legacyFormat) {
+    return null;
+  }
+  return {
+    type: legacyFormat,
+  };
 }
 
 function buildDefaultSessionKey(prefix: string, hint = "browser"): string {
@@ -433,7 +486,8 @@ export async function resolveVoiceSessionConfig(params: {
     browser: {
       enabled: voice.browser?.enabled !== false,
       wsPath,
-      sampleRateHz: voice.browser?.sampleRateHz ?? DEFAULT_VOICE_SAMPLE_RATE_HZ,
+      sampleRateHz:
+        voice.browser?.sampleRateHz ?? defaultVoiceSampleRateHzForProvider(providerId),
       channels: voice.browser?.channels ?? 1,
       frameDurationMs: voice.browser?.frameDurationMs ?? DEFAULT_VOICE_FRAME_DURATION_MS,
       vad: voice.browser?.vad ?? "provider",
@@ -485,6 +539,8 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
   private bootstrapOnlyWarningEmitted = false;
   private providerId = "openai-realtime";
   private modelId = DEFAULT_OPENAI_REALTIME_MODEL;
+  private inputSampleRateHz = defaultVoiceSampleRateHzForProvider("openai-realtime");
+  private outputSampleRateHz = defaultVoiceSampleRateHzForProvider("openai-realtime");
   private speechActive = false;
   private currentTurnResponseCreated = false;
   private currentTurnQuietFrames = 0;
@@ -499,6 +555,8 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
 
     this.providerId = options.providerId;
     this.modelId = options.modelId;
+    this.inputSampleRateHz = options.sampleRateHz;
+    this.outputSampleRateHz = options.sampleRateHz;
     this.audioFramesSent = 0;
     this.firstAudioSentAt = null;
     this.firstProviderEventAt = null;
@@ -563,16 +621,35 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       } satisfies VoiceErrorEvent);
     });
 
+    const inputAudioFormatType = normalizeNonEmptyString(options.provider.inputAudioFormat);
+    const outputAudioFormatType = normalizeNonEmptyString(options.provider.outputAudioFormat);
+    const inputFormat = {
+      type: inputAudioFormatType === "pcm16" || !inputAudioFormatType ? "audio/pcm" : inputAudioFormatType,
+      rate: options.sampleRateHz,
+    };
+    const outputFormat = {
+      type:
+        outputAudioFormatType === "pcm16" || !outputAudioFormatType
+          ? "audio/pcm"
+          : outputAudioFormatType,
+      rate: options.sampleRateHz,
+    };
     const sessionUpdate: Record<string, unknown> = {
       type: "session.update",
       session: {
-        modalities: ["text", "audio"],
+        type: "realtime",
         instructions: options.instructions,
-        input_audio_format: normalizeNonEmptyString(options.provider.inputAudioFormat) ?? "pcm16",
-        output_audio_format:
-          normalizeNonEmptyString(options.provider.outputAudioFormat) ?? "pcm16",
-        turn_detection: {
-          type: "server_vad",
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            format: inputFormat,
+            turn_detection: {
+              type: "server_vad",
+            },
+          },
+          output: {
+            format: outputFormat,
+          },
         },
         tools: toOpenAIRealtimeTools(options.tools),
         tool_choice: "auto",
@@ -583,11 +660,14 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       defaultTranscriptionModelIdForProvider(options.providerId);
     if (transcriptionModelId) {
       const session = sessionUpdate.session as Record<string, unknown>;
-      session.input_audio_transcription = { model: transcriptionModelId };
+      const audio = session.audio as Record<string, unknown>;
+      const input = audio.input as Record<string, unknown>;
+      input.transcription = { model: transcriptionModelId };
     }
     debugVoice("voice provider bootstrap", {
       providerId: options.providerId,
       modelId: options.modelId,
+      sampleRateHz: options.sampleRateHz,
       toolCount: options.tools.length,
       historyCount: options.history.length,
     });
@@ -651,6 +731,14 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     this.clearForceCommitTimer();
     this.ws?.close();
     this.ws = null;
+  }
+
+  override getTransportConfig(): VoiceTransportConfig {
+    return {
+      inputSampleRateHz: this.inputSampleRateHz,
+      outputSampleRateHz: this.outputSampleRateHz,
+      sampleRateHz: this.outputSampleRateHz,
+    };
   }
 
   private clearForceCommitTimer(): void {
@@ -718,7 +806,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     ) {
       return;
     }
-    const metrics = measurePcm16AudioBuffer(audio, DEFAULT_VOICE_SAMPLE_RATE_HZ);
+    const metrics = measurePcm16AudioBuffer(audio, this.inputSampleRateHz);
     const isQuiet =
       metrics.rms <= DEBUG_OPENAI_FORCE_COMMIT_RMS_THRESHOLD &&
       metrics.peak <= DEBUG_OPENAI_FORCE_COMMIT_PEAK_THRESHOLD;
@@ -745,14 +833,32 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     });
   }
 
+  private applyEffectiveSessionTransport(session: Record<string, unknown> | null): void {
+    const inputFormat = resolveRealtimeAudioFormat(session, "input");
+    const outputFormat = resolveRealtimeAudioFormat(session, "output");
+    this.inputSampleRateHz = inputFormat?.sampleRateHz ?? this.inputSampleRateHz;
+    this.outputSampleRateHz = outputFormat?.sampleRateHz ?? this.outputSampleRateHz;
+  }
+
   private logSessionDiagnostics(eventType: string, session: Record<string, unknown> | null): void {
     const modalities = Array.isArray(session?.modalities)
       ? session.modalities.filter((entry): entry is string => typeof entry === "string")
-      : [];
-    const turnDetection = isRecord(session?.turn_detection) ? session.turn_detection : null;
-    const transcription = isRecord(session?.input_audio_transcription)
-      ? session.input_audio_transcription
-      : null;
+      : Array.isArray(session?.output_modalities)
+        ? session.output_modalities.filter((entry): entry is string => typeof entry === "string")
+        : [];
+    const input = resolveRealtimeAudioSection(session, "input");
+    const turnDetection = isRecord(input?.turn_detection)
+      ? input.turn_detection
+      : isRecord(session?.turn_detection)
+        ? session.turn_detection
+        : null;
+    const transcription = isRecord(input?.transcription)
+      ? input.transcription
+      : isRecord(session?.input_audio_transcription)
+        ? session.input_audio_transcription
+        : null;
+    const inputFormat = resolveRealtimeAudioFormat(session, "input");
+    const outputFormat = resolveRealtimeAudioFormat(session, "output");
     const tools = Array.isArray(session?.tools) ? session.tools : [];
     debugVoice("voice session diagnostics", {
       providerId: this.providerId,
@@ -760,6 +866,10 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       modalities,
       turnDetectionType: normalizeNonEmptyString(turnDetection?.type),
       transcriptionModel: normalizeNonEmptyString(transcription?.model),
+      inputAudioFormat: inputFormat?.type,
+      inputSampleRateHz: inputFormat?.sampleRateHz ?? this.inputSampleRateHz,
+      outputAudioFormat: outputFormat?.type,
+      outputSampleRateHz: outputFormat?.sampleRateHz ?? this.outputSampleRateHz,
       toolCount: tools.length,
     });
   }
@@ -845,6 +955,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     switch (type) {
       case "session.created": {
         const session = isRecord(event.session) ? event.session : null;
+        this.applyEffectiveSessionTransport(session);
         this.logSessionDiagnostics(type, session);
         this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
         this.maybeWarnIfProviderStalled();
@@ -852,6 +963,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       }
       case "session.updated": {
         const session = isRecord(event.session) ? event.session : null;
+        this.applyEffectiveSessionTransport(session);
         this.logSessionDiagnostics(type, session);
         this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
         this.maybeWarnIfProviderStalled();
@@ -930,7 +1042,8 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         }
         return;
       }
-      case "response.audio_transcript.delta": {
+      case "response.audio_transcript.delta":
+      case "response.output_audio_transcript.delta": {
         const delta = normalizeTranscriptDelta(event.delta);
         if (delta) {
           if (this.firstTranscriptAt === null) {
@@ -945,7 +1058,8 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         }
         return;
       }
-      case "response.audio_transcript.done": {
+      case "response.audio_transcript.done":
+      case "response.output_audio_transcript.done": {
         const transcript = normalizeNonEmptyString(event.transcript);
         if (transcript) {
           if (this.firstTranscriptAt === null) {
@@ -960,7 +1074,8 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         }
         return;
       }
-      case "response.audio.delta": {
+      case "response.audio.delta":
+      case "response.output_audio.delta": {
         const delta = normalizeNonEmptyString(event.delta);
         if (delta) {
           const chunk = Buffer.from(delta, "base64");
@@ -1338,6 +1453,9 @@ export type VoiceSessionOrchestratorOptions = {
 export class VoiceSessionOrchestrator extends EventEmitter {
   private adapterBound = false;
   private responding = false;
+  private assistantPlaybackActive = false;
+  // Keep stray provider transcripts caused by speaker bleed from landing as user turns.
+  private awaitingFreshUserSpeechStart = false;
   private finalTurnCache = new Set<string>();
   private closed = false;
 
@@ -1370,6 +1488,8 @@ export class VoiceSessionOrchestrator extends EventEmitter {
       return;
     }
     this.responding = false;
+    this.assistantPlaybackActive = false;
+    this.awaitingFreshUserSpeechStart = false;
     this.options.adapter.interrupt();
     this.emit("state", {
       state: "listening",
@@ -1382,6 +1502,9 @@ export class VoiceSessionOrchestrator extends EventEmitter {
       return;
     }
     this.closed = true;
+    this.responding = false;
+    this.assistantPlaybackActive = false;
+    this.awaitingFreshUserSpeechStart = false;
     this.options.adapter.close();
     this.emit("state", { state: "closed" } satisfies VoiceStateEvent);
   }
@@ -1393,11 +1516,28 @@ export class VoiceSessionOrchestrator extends EventEmitter {
     this.adapterBound = true;
     this.options.adapter.on("audio", (audio: Buffer) => {
       this.responding = true;
+      this.assistantPlaybackActive = true;
+      this.awaitingFreshUserSpeechStart = true;
       this.emit("audio", audio);
     });
     this.options.adapter.on("transcript", (event: VoiceTranscriptEvent) => {
       if (event.role === "assistant" && !event.final) {
         this.responding = true;
+      }
+      if (
+        event.role === "user" &&
+        event.final &&
+        this.awaitingFreshUserSpeechStart
+      ) {
+        debugVoice("voice transcript persist skipped", {
+          providerId: this.options.providerId,
+          sessionKey: this.options.sessionKey,
+          role: event.role,
+          reason: "awaiting-fresh-speech-start",
+          assistantPlaybackActive: this.assistantPlaybackActive,
+          textLength: event.text.trim().length,
+        });
+        return;
       }
       if (event.final) {
         if (event.role === "assistant") {
@@ -1413,14 +1553,29 @@ export class VoiceSessionOrchestrator extends EventEmitter {
       }
       if (event.state === "connected" || event.state === "listening") {
         if (event.detail === "speech-start" && this.options.interruptOnSpeech && this.responding) {
+          this.awaitingFreshUserSpeechStart = false;
           this.options.adapter.interrupt();
+          this.assistantPlaybackActive = false;
           this.responding = false;
         }
+        if (event.detail === "speech-start") {
+          this.awaitingFreshUserSpeechStart = false;
+        }
         if (event.state === "listening") {
+          if (event.detail === "interrupt") {
+            this.assistantPlaybackActive = false;
+            this.awaitingFreshUserSpeechStart = false;
+          }
+          this.responding = false;
+        }
+        if (event.state === "connected") {
+          this.assistantPlaybackActive = false;
           this.responding = false;
         }
       }
       if (event.state === "closed") {
+        this.assistantPlaybackActive = false;
+        this.awaitingFreshUserSpeechStart = false;
         this.closed = true;
       }
       this.emit("state", event);
@@ -1573,10 +1728,15 @@ export async function createVoiceSessionRuntime(params: {
         provider: resolved.provider,
         providerId: resolved.providerId,
         modelId: params.modelId ?? resolved.modelId,
+        sampleRateHz: resolved.browser.sampleRateHz,
         instructions,
         tools: toolRuntime.definitions,
         history,
       });
+      const transport = adapter.getTransportConfig();
+      if (typeof transport?.sampleRateHz === "number") {
+        resolved.browser.sampleRateHz = transport.sampleRateHz;
+      }
     },
   };
 }

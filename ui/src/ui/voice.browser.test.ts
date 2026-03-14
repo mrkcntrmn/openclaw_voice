@@ -15,8 +15,18 @@ describe("voice panel app wiring", () => {
     app.voiceProvider = "live-provider";
     app.voiceConnected = true;
     app.voiceStatus = "Listening";
-    app.voiceUserTranscript = "Testing one two";
-    app.voiceAssistantTranscript = "I can hear you.";
+    app.voiceLiveUserTurn = {
+      text: "Testing one two",
+      final: false,
+      startedAt: 1000,
+      updatedAt: 1001,
+    };
+    app.voiceLiveAssistantTurn = {
+      text: "I can hear you.",
+      final: false,
+      startedAt: 1002,
+      updatedAt: 1003,
+    };
     app.voiceVolume = 0.42;
 
     await app.updateComplete;
@@ -24,9 +34,10 @@ describe("voice panel app wiring", () => {
     const provider = app.querySelector(".voice-panel__provider");
     expect(provider?.textContent?.trim()).toBe("live-provider");
 
-    const transcriptNodes = Array.from(app.querySelectorAll<HTMLElement>(".voice-panel__text"));
-    expect(transcriptNodes[0]?.textContent?.trim()).toBe("Testing one two");
-    expect(transcriptNodes[1]?.textContent?.trim()).toBe("I can hear you.");
+    expect(app.querySelector(".voice-panel__text")).toBeNull();
+    const chatBubbles = Array.from(app.querySelectorAll<HTMLElement>(".chat-bubble.voice-live"));
+    expect(chatBubbles[0]?.textContent).toContain("Testing one two");
+    expect(chatBubbles[1]?.textContent).toContain("I can hear you.");
 
     const indicator = app.querySelector("voice-activity-indicator") as { volume?: number } | null;
     expect(indicator?.volume).toBe(0.42);

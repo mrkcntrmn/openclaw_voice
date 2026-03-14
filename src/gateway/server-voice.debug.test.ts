@@ -64,7 +64,7 @@ vi.mock("../voice/runtime.js", () => ({
     browser: {
       enabled: true,
       wsPath: "/voice/ws",
-      sampleRateHz: 16000,
+      sampleRateHz: 24000,
       channels: 1,
       frameDurationMs: 20,
       authTimeoutMs: 10000,
@@ -110,7 +110,7 @@ vi.mock("../voice/runtime.js", () => ({
         providerId: "openai-realtime",
         modelId: "gpt-4o-realtime-preview",
         browser: {
-          sampleRateHz: 16000,
+          sampleRateHz: 24000,
           channels: 1,
           frameDurationMs: 20,
         },
@@ -147,7 +147,7 @@ async function writeVoiceConfig(): Promise<void> {
       browser: {
         enabled: true,
         wsPath: "/voice/ws",
-        sampleRateHz: 16000,
+        sampleRateHz: 24000,
         channels: 1,
         frameDurationMs: 20,
       },

@@ -141,6 +141,7 @@ function createConnectOptions() {
     provider: {} as never,
     providerId: "openai-realtime",
     modelId: "gpt-4o-realtime-preview",
+    sampleRateHz: 24_000,
     instructions: "Keep it concise.",
     tools: [],
     history: [],
@@ -153,6 +154,7 @@ function createLiveConnectOptions(providerId: string, apiKey: string, tools: unk
     providerId,
     modelId:
       providerId === "gemini-live" ? "gemini-2.0-flash-exp" : "gpt-4o-realtime-preview",
+    sampleRateHz: providerId === "gemini-live" ? 16_000 : 24_000,
     instructions: "Keep it concise.",
     tools,
     history: [],
@@ -277,9 +279,25 @@ describe("resolveVoiceSessionConfig", () => {
     });
 
     expect(resolved.browser.channels).toBe(1);
+    expect(resolved.browser.sampleRateHz).toBe(24_000);
     expect(resolved.browser.vad).toBe("provider");
     expect(resolved.session.sharedChatHistory).toBe(true);
     expect(resolved.deployment.websocket.maxSessionMinutes).toBe(9);
+  });
+
+  it("keeps Gemini browser voice on 16 kHz by default", async () => {
+    const resolved = await resolveVoiceSessionConfig({
+      cfg: {
+        voice: {
+          provider: "gemini-live",
+          providers: {
+            "gemini-live": { apiKey: "sk-gemini" },
+          },
+        },
+      } as never,
+    });
+
+    expect(resolved.browser.sampleRateHz).toBe(16_000);
   });
 });
 
@@ -312,14 +330,29 @@ describe("voice adapters", () => {
         },
       ]),
     );
-
     const ws = wsMockState.instances[0];
     expect(ws?.url).toContain("api.openai.com");
     expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
       type: "session.update",
       session: {
-        modalities: ["text", "audio"],
-        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+        type: "realtime",
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            format: {
+              type: "audio/pcm",
+              rate: 24_000,
+            },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad" },
+          },
+          output: {
+            format: {
+              type: "audio/pcm",
+              rate: 24_000,
+            },
+          },
+        },
         tools: [
           {
             type: "function",
@@ -336,14 +369,29 @@ describe("voice adapters", () => {
       },
     });
 
-    ws?.emitJson({ type: "session.created" });
+    ws?.emitJson({
+      type: "session.created",
+      session: {
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 24_000 },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad" },
+          },
+          output: {
+            format: { type: "audio/pcm", rate: 24_000 },
+          },
+        },
+      },
+    });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: "Good" });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: " morning" });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.completed", transcript: "good morning" });
-    ws?.emitJson({ type: "response.audio_transcript.delta", delta: "Hi" });
-    ws?.emitJson({ type: "response.audio_transcript.delta", delta: " there" });
-    ws?.emitJson({ type: "response.audio_transcript.done", transcript: "hi there" });
-    ws?.emitJson({ type: "response.audio.delta", delta: Buffer.from("pcm").toString("base64") });
+    ws?.emitJson({ type: "response.output_audio_transcript.delta", delta: "Hi" });
+    ws?.emitJson({ type: "response.output_audio_transcript.delta", delta: " there" });
+    ws?.emitJson({ type: "response.output_audio_transcript.done", transcript: "hi there" });
+    ws?.emitJson({ type: "response.output_audio.delta", delta: Buffer.from("pcm").toString("base64") });
     ws?.emitJson({
       type: "response.function_call_arguments.done",
       call_id: "call-1",
@@ -514,6 +562,43 @@ describe("VoiceSessionOrchestrator", () => {
     expect(adapter.interruptMock).toHaveBeenCalledTimes(1);
   });
 
+  it("suppresses stray finalized user transcripts until a fresh speech-start arrives", async () => {
+    const adapter = new TestAdapter();
+    const orchestrator = new VoiceSessionOrchestrator({
+      adapter,
+      toolRuntime: {
+        definitions: [],
+        execute: vi.fn(async (call) => ({ ...call, output: "ok" })),
+      },
+      sessionKey: "voice:browser:test-session",
+      providerId: "openai-realtime",
+      modelId: "gpt-4o-realtime-preview",
+      persistTranscripts: true,
+      pauseOnToolCall: true,
+      interruptOnSpeech: true,
+    });
+    const transcripts: Array<{ role: string; text: string; final: boolean }> = [];
+    orchestrator.on("transcript", (event) => {
+      transcripts.push(event);
+    });
+
+    await orchestrator.connect(createConnectOptions());
+    adapter.emit("audio", Buffer.from("pcm"));
+    adapter.emit("state", { state: "connected" });
+    adapter.emit("transcript", { role: "user", text: "echo bleed", final: true });
+    adapter.emit("state", { state: "listening", detail: "speech-start" });
+    adapter.emit("transcript", { role: "user", text: "real barge in", final: true });
+
+    await vi.waitFor(() => {
+      expect(transcriptMocks.appendVoiceTranscriptMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(transcriptMocks.appendVoiceTranscriptMessage.mock.calls[0]?.[0]).toMatchObject({
+      role: "user",
+      text: "real barge in",
+    });
+    expect(transcripts).toEqual([{ role: "user", text: "real barge in", final: true }]);
+  });
+
   it("executes tool calls, emits tool results, and forwards results back to the adapter", async () => {
     const adapter = new TestAdapter();
     const execute = vi.fn(async (call: { callId: string; name: string; arguments: Record<string, unknown> }) => ({
@@ -568,6 +653,4 @@ describe("VoiceSessionOrchestrator", () => {
     );
   });
 });
-
-
 

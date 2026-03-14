@@ -5,6 +5,7 @@ import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
+import type { VoiceLiveTurn } from "./controllers/voice.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
 import type { UiSettings } from "./storage.ts";
@@ -77,8 +78,8 @@ export type AppViewState = {
   voiceConnected: boolean;
   voiceStatus: string | null;
   voiceError: string | null;
-  voiceUserTranscript: string | null;
-  voiceAssistantTranscript: string | null;
+  voiceLiveUserTurn: VoiceLiveTurn | null;
+  voiceLiveAssistantTurn: VoiceLiveTurn | null;
   voiceSessionKey: string | null;
   voiceProvider: string | null;
   voiceVolume: number;
