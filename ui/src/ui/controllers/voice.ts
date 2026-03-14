@@ -19,6 +19,7 @@ const VOICE_AUDIO_SILENCE_WARNING_FRAME_COUNT = 60;
 const VOICE_AUDIO_SILENCE_RMS_THRESHOLD = 0.01;
 const VOICE_AUDIO_ACTIVITY_VOLUME_THRESHOLD = 0.01;
 const VOICE_NO_TRANSCRIPT_WARNING_MS = 5_000;
+const VOICE_METER_COMMIT_INTERVAL_MS = 80;
 
 export type VoiceLiveTurn = {
   text: string;
@@ -381,6 +382,16 @@ type TranscriptBufferState = {
   assistantStartedAt: number | null;
 };
 
+type VoiceDisplayState = {
+  frameId: number | null;
+  volumeTimer: number | null;
+  pendingUserTurn: VoiceLiveTurn | null | undefined;
+  pendingAssistantTurn: VoiceLiveTurn | null | undefined;
+  pendingVolume: number | null;
+  lastVolumeCommitAt: number;
+  flushReason: string | null;
+};
+
 function isPersistedVoiceTurn(
   host: Pick<VoiceHost, "chatMessages">,
   role: "user" | "assistant",
@@ -489,6 +500,146 @@ function scheduleHistoryRefresh(
 }
 
 const transcriptBuffers = new WeakMap<VoiceHost, TranscriptBufferState>();
+const voiceDisplayStates = new WeakMap<VoiceHost, VoiceDisplayState>();
+
+function getVoiceDisplayState(host: VoiceHost): VoiceDisplayState {
+  const existing = voiceDisplayStates.get(host);
+  if (existing) {
+    return existing;
+  }
+  const created: VoiceDisplayState = {
+    frameId: null,
+    volumeTimer: null,
+    pendingUserTurn: undefined,
+    pendingAssistantTurn: undefined,
+    pendingVolume: null,
+    lastVolumeCommitAt: 0,
+    flushReason: null,
+  };
+  voiceDisplayStates.set(host, created);
+  return created;
+}
+
+function clearVoiceDisplayState(host: VoiceHost): void {
+  const state = voiceDisplayStates.get(host);
+  if (!state) {
+    return;
+  }
+  if (state.frameId !== null) {
+    cancelAnimationFrame(state.frameId);
+  }
+  if (state.volumeTimer !== null) {
+    window.clearTimeout(state.volumeTimer);
+  }
+  voiceDisplayStates.delete(host);
+}
+
+function equalLiveTurns(a: VoiceLiveTurn | null, b: VoiceLiveTurn | null): boolean {
+  return (
+    a?.text === b?.text &&
+    a?.final === b?.final &&
+    a?.startedAt === b?.startedAt &&
+    a?.updatedAt === b?.updatedAt
+  );
+}
+
+function currentPendingTurn(
+  pending: VoiceLiveTurn | null | undefined,
+  current: VoiceLiveTurn | null,
+): VoiceLiveTurn | null {
+  return pending === undefined ? current : pending;
+}
+
+function scheduleVoiceDisplayFlush(
+  host: VoiceHost,
+  displayState: VoiceDisplayState,
+  reason: string,
+): void {
+  if (!displayState.flushReason) {
+    displayState.flushReason = reason;
+  }
+  if (displayState.frameId !== null) {
+    return;
+  }
+  displayState.frameId = requestAnimationFrame(() => {
+    displayState.frameId = null;
+    flushVoiceDisplayState(host, displayState);
+  });
+}
+
+function scheduleVoiceVolumeFlush(
+  host: VoiceHost,
+  displayState: VoiceDisplayState,
+  delayMs: number,
+): void {
+  if (displayState.volumeTimer !== null) {
+    return;
+  }
+  displayState.volumeTimer = window.setTimeout(() => {
+    displayState.volumeTimer = null;
+    scheduleVoiceDisplayFlush(host, displayState, "meter-throttle");
+  }, Math.max(0, delayMs));
+}
+
+function flushVoiceDisplayState(host: VoiceHost, displayState: VoiceDisplayState): void {
+  let changed = false;
+  let transcriptFlushed = false;
+  let volumeCommitted = false;
+
+  if (displayState.pendingUserTurn !== undefined) {
+    if (!equalLiveTurns(host.voiceLiveUserTurn, displayState.pendingUserTurn)) {
+      host.voiceLiveUserTurn = displayState.pendingUserTurn;
+      changed = true;
+    }
+    displayState.pendingUserTurn = undefined;
+    transcriptFlushed = true;
+  }
+
+  if (displayState.pendingAssistantTurn !== undefined) {
+    if (!equalLiveTurns(host.voiceLiveAssistantTurn, displayState.pendingAssistantTurn)) {
+      host.voiceLiveAssistantTurn = displayState.pendingAssistantTurn;
+      changed = true;
+    }
+    displayState.pendingAssistantTurn = undefined;
+    transcriptFlushed = true;
+  }
+
+  if (displayState.pendingVolume !== null) {
+    const now = Date.now();
+    const remaining =
+      displayState.lastVolumeCommitAt + VOICE_METER_COMMIT_INTERVAL_MS - now;
+    if (displayState.pendingVolume === 0 || remaining <= 0) {
+      if (host.voiceVolume !== displayState.pendingVolume) {
+        host.voiceVolume = displayState.pendingVolume;
+        changed = true;
+      }
+      displayState.lastVolumeCommitAt = now;
+      displayState.pendingVolume = null;
+      volumeCommitted = true;
+    } else {
+      scheduleVoiceVolumeFlush(host, displayState, remaining);
+    }
+  }
+
+  const flushReason = displayState.flushReason;
+  displayState.flushReason = null;
+  if (transcriptFlushed || volumeCommitted) {
+    debugVoice("voice display flush", {
+      sessionKey: host.voiceSessionKey ?? host.sessionKey,
+      providerId: host.voiceProvider,
+      reason: flushReason,
+      transcriptFlushed,
+      volumeCommitted,
+      userTextLength: host.voiceLiveUserTurn?.text.length ?? 0,
+      assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0,
+      volume: host.voiceVolume,
+    });
+  }
+
+  if (changed) {
+    notifyVoiceHostUpdated(host);
+  }
+}
 
 function appendTranscriptBuffer(buffer: string, incoming: string): string {
   if (!buffer) {
@@ -519,6 +670,7 @@ function applyTranscriptUpdate(
     userStartedAt: null,
     assistantStartedAt: null,
   };
+  const displayState = getVoiceDisplayState(host);
   const now = Date.now();
 
   debugVoice("voice transcript update received", {
@@ -533,49 +685,76 @@ function applyTranscriptUpdate(
 
   if (params.role === "user") {
     if (params.final) {
+      const currentUserTurn = currentPendingTurn(
+        displayState.pendingUserTurn,
+        host.voiceLiveUserTurn,
+      );
       const startedAt =
         state.userStartedAt ??
-        (host.voiceLiveUserTurn && !host.voiceLiveUserTurn.final
-          ? host.voiceLiveUserTurn.startedAt
-          : now);
+        (currentUserTurn && !currentUserTurn.final ? currentUserTurn.startedAt : now);
       state.user = "";
       state.userStartedAt = null;
-      host.voiceLiveUserTurn = buildLiveTurn(params.text, true, startedAt, now);
+      displayState.pendingUserTurn = buildLiveTurn(params.text, true, startedAt, now);
       transcriptBuffers.set(host, state);
+      displayState.flushReason = "user-final-transcript";
+      flushVoiceDisplayState(host, displayState);
       maybeClearSettledVoiceTurns(host);
-      debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
-      notifyVoiceHostUpdated(host);
+      debugVoice("voice transcript update applied", {
+        role: params.role,
+        final: params.final,
+        userTextLength: host.voiceLiveUserTurn?.text.length ?? 0,
+        assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0,
+      });
       return;
     }
     if (state.userStartedAt === null || host.voiceLiveUserTurn?.final) {
       state.userStartedAt = now;
     }
     state.user = appendTranscriptBuffer(state.user, params.text);
-    if (host.voiceLiveAssistantTurn && !host.voiceLiveAssistantTurn.final) {
-      host.voiceLiveAssistantTurn = null;
+    const assistantTurn = currentPendingTurn(
+      displayState.pendingAssistantTurn,
+      host.voiceLiveAssistantTurn,
+    );
+    if (assistantTurn && !assistantTurn.final) {
+      displayState.pendingAssistantTurn = null;
       state.assistant = "";
       state.assistantStartedAt = null;
     }
-    host.voiceLiveUserTurn = buildLiveTurn(state.user, false, state.userStartedAt ?? now, now);
+    displayState.pendingUserTurn = buildLiveTurn(state.user, false, state.userStartedAt ?? now, now);
     transcriptBuffers.set(host, state);
-    debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
-    notifyVoiceHostUpdated(host);
+    scheduleVoiceDisplayFlush(host, displayState, "user-partial-transcript");
+    debugVoice("voice transcript update applied", {
+      role: params.role,
+      final: params.final,
+      userTextLength: state.user.length,
+      assistantTextLength: state.assistant.length,
+    });
     return;
   }
 
   if (params.final) {
+    const currentAssistantTurn = currentPendingTurn(
+      displayState.pendingAssistantTurn,
+      host.voiceLiveAssistantTurn,
+    );
     const startedAt =
       state.assistantStartedAt ??
-      (host.voiceLiveAssistantTurn && !host.voiceLiveAssistantTurn.final
-        ? host.voiceLiveAssistantTurn.startedAt
+      (currentAssistantTurn && !currentAssistantTurn.final
+        ? currentAssistantTurn.startedAt
         : now);
     state.assistant = "";
     state.assistantStartedAt = null;
-    host.voiceLiveAssistantTurn = buildLiveTurn(params.text, true, startedAt, now);
+    displayState.pendingAssistantTurn = buildLiveTurn(params.text, true, startedAt, now);
     transcriptBuffers.set(host, state);
+    displayState.flushReason = "assistant-final-transcript";
+    flushVoiceDisplayState(host, displayState);
     maybeClearSettledVoiceTurns(host);
-    debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
-    notifyVoiceHostUpdated(host);
+    debugVoice("voice transcript update applied", {
+      role: params.role,
+      final: params.final,
+      userTextLength: host.voiceLiveUserTurn?.text.length ?? 0,
+      assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0,
+    });
     return;
   }
 
@@ -583,15 +762,20 @@ function applyTranscriptUpdate(
     state.assistantStartedAt = now;
   }
   state.assistant = appendTranscriptBuffer(state.assistant, params.text);
-  host.voiceLiveAssistantTurn = buildLiveTurn(
+  displayState.pendingAssistantTurn = buildLiveTurn(
     state.assistant,
     false,
     state.assistantStartedAt ?? now,
     now,
   );
   transcriptBuffers.set(host, state);
-  debugVoice("voice transcript update applied", { role: params.role, final: params.final, userTextLength: host.voiceLiveUserTurn?.text.length ?? 0, assistantTextLength: host.voiceLiveAssistantTurn?.text.length ?? 0 });
-  notifyVoiceHostUpdated(host);
+  scheduleVoiceDisplayFlush(host, displayState, "assistant-partial-transcript");
+  debugVoice("voice transcript update applied", {
+    role: params.role,
+    final: params.final,
+    userTextLength: state.user.length,
+    assistantTextLength: state.assistant.length,
+  });
 }
 
 
@@ -606,6 +790,7 @@ function resetVoiceState(host: VoiceHost, preserveError = false): void {
   host.voiceLiveAssistantTurn = null;
   host.voiceVolume = 0;
   transcriptBuffers.delete(host);
+  clearVoiceDisplayState(host);
   if (!preserveError) {
     host.voiceError = null;
   }
@@ -675,6 +860,7 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
     pending: false,
     disposed: false,
   };
+  const displayState = getVoiceDisplayState(host);
   const pendingFrameStats: Array<Pcm16AudioMetrics & { sequence: number }> = [];
   let outboundAudioFrames = 0;
 
@@ -822,7 +1008,11 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
         }
       },
       onVolumeChange: (volume) => {
-        host.voiceVolume = volume;
+        if (closing) {
+          return;
+        }
+        displayState.pendingVolume = volume;
+        scheduleVoiceDisplayFlush(host, displayState, "volume");
         if (volume >= VOICE_AUDIO_ACTIVITY_VOLUME_THRESHOLD) {
           sawMeaningfulVolume = true;
         }
@@ -987,7 +1177,15 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
             if (playback) {
               playback.stop();
             }
-            playback = new AudioPlayback(readySampleRateHz);
+            playback = new AudioPlayback(readySampleRateHz, {
+              onDebug: (message, meta) => {
+                debugVoice(message, {
+                  sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
+                  providerId: host.voiceProvider ?? providerId,
+                  ...meta,
+                });
+              },
+            });
             playback.start();
             scheduleTranscriptWarning();
             debugVoice("voice control frame", {

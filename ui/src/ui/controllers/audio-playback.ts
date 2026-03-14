@@ -1,4 +1,10 @@
 const READY_LATENCY_PADDING_SEC = 0.03;
+const DEFAULT_PLAYBACK_BACKLOG_CAP_SEC = 0.35;
+
+type AudioPlaybackOptions = {
+  backlogCapSec?: number;
+  onDebug?: (message: string, meta: Record<string, unknown>) => void;
+};
 
 export class AudioPlayback {
   private context: AudioContext | null = null;
@@ -6,7 +12,17 @@ export class AudioPlayback {
   private sources = new Set<AudioBufferSourceNode>();
   private nextStartTime = 0;
 
-  constructor(private sampleRateHz: number) {}
+  constructor(
+    private sampleRateHz: number,
+    private options: AudioPlaybackOptions = {},
+  ) {}
+
+  getBufferedAheadSec(): number {
+    if (!this.context) {
+      return 0;
+    }
+    return Math.max(0, this.nextStartTime - this.context.currentTime);
+  }
 
   start(): void {
     this.context = new AudioContext();
@@ -14,22 +30,15 @@ export class AudioPlayback {
     this.gain.gain.value = 1;
     this.gain.connect(this.context.destination);
     this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
+    this.options.onDebug?.("voice playback context", {
+      transportSampleRateHz: this.sampleRateHz,
+      contextSampleRateHz: this.context.sampleRate,
+      backlogCapSec: this.options.backlogCapSec ?? DEFAULT_PLAYBACK_BACKLOG_CAP_SEC,
+    });
   }
 
   stop(): void {
-    for (const source of this.sources) {
-      try {
-        source.stop();
-      } catch {
-        // Ignore
-      }
-      try {
-        source.disconnect();
-      } catch {
-        // Ignore
-      }
-    }
-    this.sources.clear();
+    this.clearSources();
     if (this.gain) {
       try {
         this.gain.disconnect();
@@ -42,6 +51,7 @@ export class AudioPlayback {
     }
     this.context = null;
     this.gain = null;
+    this.nextStartTime = 0;
   }
 
   enqueue(payload: ArrayBuffer): void {
@@ -73,6 +83,21 @@ export class AudioPlayback {
       }
     });
 
+    const bufferedAheadSec = this.getBufferedAheadSec();
+    const backlogCapSec = this.options.backlogCapSec ?? DEFAULT_PLAYBACK_BACKLOG_CAP_SEC;
+    if (bufferedAheadSec > backlogCapSec) {
+      // Drop stale queued audio so playback stays close to the live conversation.
+      this.options.onDebug?.("voice playback backlog reset", {
+        transportSampleRateHz: this.sampleRateHz,
+        contextSampleRateHz: this.context.sampleRate,
+        bufferedAheadSec,
+        backlogCapSec,
+        byteLength: payload.byteLength,
+      });
+      this.clearSources();
+      this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
+    }
+
     const startTime = Math.max(
       this.context.currentTime + READY_LATENCY_PADDING_SEC,
       this.nextStartTime,
@@ -83,6 +108,13 @@ export class AudioPlayback {
   }
 
   interrupt(): void {
+    this.clearSources();
+    if (this.context) {
+      this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
+    }
+  }
+
+  private clearSources(): void {
     for (const source of this.sources) {
       try {
         source.stop();
@@ -96,8 +128,5 @@ export class AudioPlayback {
       }
     }
     this.sources.clear();
-    if (this.context) {
-      this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
-    }
   }
 }

@@ -18,6 +18,10 @@ import {
 const wsInstances: FakeWebSocket[] = [];
 const workletInstances: FakeAudioWorkletNode[] = [];
 const playbackSampleRates: number[] = [];
+const rafState = {
+  nextId: 1,
+  callbacks: new Map<number, FrameRequestCallback>(),
+};
 
 class FakeTrack {
   stopped = false;
@@ -208,6 +212,28 @@ function installBrowserVoiceGlobals(params?: {
     configurable: true,
     value: FakeURL.revokeObjectURL,
   });
+  vi.stubGlobal(
+    "requestAnimationFrame",
+    vi.fn((callback: FrameRequestCallback) => {
+      const id = rafState.nextId++;
+      rafState.callbacks.set(id, callback);
+      return id;
+    }),
+  );
+  vi.stubGlobal(
+    "cancelAnimationFrame",
+    vi.fn((id: number) => {
+      rafState.callbacks.delete(id);
+    }),
+  );
+}
+
+function flushAnimationFrame(now = Date.now()): void {
+  const callbacks = [...rafState.callbacks.values()];
+  rafState.callbacks.clear();
+  for (const callback of callbacks) {
+    callback(now);
+  }
 }
 
 function createBootstrapResponse(overrides: Record<string, unknown> = {}) {
@@ -267,8 +293,11 @@ beforeEach(() => {
   wsInstances.length = 0;
   workletInstances.length = 0;
   playbackSampleRates.length = 0;
+  rafState.nextId = 1;
+  rafState.callbacks.clear();
   chatMocks.loadChatHistory.mockReset();
   vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-14T10:00:00.000Z"));
 });
 
 afterEach(() => {
@@ -371,17 +400,19 @@ describe("handleVoiceConnect", () => {
     expect(host.voiceSessionKey).toBe("voice:browser:1");
 
     ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "Good", final: false }));
-    expect(host.voiceLiveUserTurn).toMatchObject({ text: "Good", final: false });
     ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: " morning", final: false }));
+    expect(host.voiceLiveUserTurn).toBeNull();
+    flushAnimationFrame();
     expect(host.voiceLiveUserTurn).toMatchObject({ text: "Good morning", final: false });
     ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "good morning", final: true }));
     ws?.emitMessage(
       JSON.stringify({ type: "transcript", role: "assistant", text: "Hi", final: false }),
     );
-    expect(host.voiceLiveAssistantTurn).toMatchObject({ text: "Hi", final: false });
     ws?.emitMessage(
       JSON.stringify({ type: "transcript", role: "assistant", text: " there", final: false }),
     );
+    expect(host.voiceLiveAssistantTurn).toBeNull();
+    flushAnimationFrame();
     expect(host.voiceLiveAssistantTurn).toMatchObject({ text: "Hi there", final: false });
     ws?.emitMessage(
       JSON.stringify({ type: "transcript", role: "assistant", text: "hi there", final: true }),
@@ -411,6 +442,56 @@ describe("handleVoiceConnect", () => {
     expect(host.voiceConnected).toBe(false);
     expect(host.voiceHandle).toBeNull();
     expect(ws?.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  it("batches partial transcript and meter updates into display flushes while keeping finals immediate", async () => {
+    installBrowserVoiceGlobals();
+    const host = createHost();
+
+    await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+        transport: {
+          sampleRateHz: 24000,
+        },
+      }),
+    );
+
+    const updateCountBefore = host.requestUpdate.mock.calls.length;
+    workletInstances[0]?.emitVolume(0.02);
+    workletInstances[0]?.emitVolume(0.03);
+    ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "Good", final: false }));
+    ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: " morning", final: false }));
+
+    expect(host.voiceVolume).toBe(0);
+    expect(host.voiceLiveUserTurn).toBeNull();
+    expect(host.requestUpdate.mock.calls.length).toBe(updateCountBefore);
+
+    flushAnimationFrame();
+    expect(host.voiceVolume).toBe(0.03);
+    expect(host.voiceLiveUserTurn).toMatchObject({ text: "Good morning", final: false });
+    expect(host.requestUpdate.mock.calls.length).toBe(updateCountBefore + 1);
+
+    vi.setSystemTime(new Date("2026-03-14T10:00:00.040Z"));
+    workletInstances[0]?.emitVolume(0.05);
+    flushAnimationFrame();
+    expect(host.voiceVolume).toBe(0.03);
+    expect(host.requestUpdate.mock.calls.length).toBe(updateCountBefore + 1);
+
+    vi.advanceTimersByTime(41);
+    vi.setSystemTime(new Date("2026-03-14T10:00:00.081Z"));
+    flushAnimationFrame();
+    expect(host.voiceVolume).toBe(0.05);
+    expect(host.requestUpdate.mock.calls.length).toBe(updateCountBefore + 2);
+
+    ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "good morning", final: true }));
+    expect(host.voiceLiveUserTurn).toMatchObject({ text: "good morning", final: true });
+    expect(host.requestUpdate.mock.calls.length).toBe(updateCountBefore + 3);
   });
 
   it("uses ready transport sample rate for playback instead of the bootstrap fallback", async () => {
