@@ -25,7 +25,10 @@ class FakeAudioContext {
   sampleRate = 48_000;
   destination = {};
   readonly sources: FakeAudioBufferSourceNode[] = [];
-  constructor() {
+  constructor(options?: { sampleRate?: number }) {
+    if (options?.sampleRate) {
+      this.sampleRate = options.sampleRate;
+    }
     createdContexts.push(this);
   }
   async close(): Promise<void> {

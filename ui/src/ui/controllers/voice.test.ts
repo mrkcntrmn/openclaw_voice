@@ -57,10 +57,17 @@ class FakeAudioBufferSourceNode extends FakeAudioNode {
 class FakeAudioContext {
   state: "running" | "closed" = "running";
   currentTime = 0;
+  sampleRate = 48_000;
   destination = {};
   audioWorklet = {
     addModule: vi.fn(async () => undefined),
   };
+
+  constructor(options?: { sampleRate?: number }) {
+    if (options?.sampleRate) {
+      this.sampleRate = options.sampleRate;
+    }
+  }
 
   async resume(): Promise<void> {
     return;

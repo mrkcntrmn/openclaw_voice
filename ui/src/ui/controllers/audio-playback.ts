@@ -25,7 +25,7 @@ export class AudioPlayback {
   }
 
   start(): void {
-    this.context = new AudioContext();
+    this.context = new AudioContext({ sampleRate: this.sampleRateHz });
     this.gain = this.context.createGain();
     this.gain.gain.value = 1;
     this.gain.connect(this.context.destination);

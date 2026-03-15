@@ -22,9 +22,15 @@ class FakeAudioNode {
 
 class FakeAudioContext {
   state: "running" | "closed" = "running";
+  sampleRate = 48_000;
   audioWorklet = {
     addModule: vi.fn(async () => undefined),
   };
+  constructor(options?: { sampleRate?: number }) {
+    if (options?.sampleRate) {
+      this.sampleRate = options.sampleRate;
+    }
+  }
   async resume(): Promise<void> {
     return;
   }
