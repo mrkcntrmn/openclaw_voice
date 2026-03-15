@@ -109,7 +109,7 @@ describe("AudioPlayback", () => {
       "voice playback backlog reset",
       expect.objectContaining({
         transportSampleRateHz: 16000,
-        contextSampleRateHz: 48000,
+        contextSampleRateHz: 16000,
         backlogCapSec: 0.35,
       }),
     );

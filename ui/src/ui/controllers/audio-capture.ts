@@ -119,7 +119,7 @@ export class AudioCapture {
       },
     });
 
-    this.context = new AudioContext();
+    this.context = new AudioContext({ sampleRate: this.options.sampleRateHz });
     await this.context.resume();
     await this.ensureWorklet(this.context);
 
