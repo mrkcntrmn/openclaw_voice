@@ -18,3 +18,6 @@
 - [ ] Task: Conduct cross-browser verification (Chrome, Safari, Firefox) to confirm the fix is universal as required.
 - [ ] Task: Profile the audio pipeline for latency to ensure the fix hasn't introduced noticeable delays.
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Stabilization & Regression Testing' (Protocol in workflow.md)
+
+## Phase: Review Fixes
+- [x] Task: Apply review suggestions d45a078
