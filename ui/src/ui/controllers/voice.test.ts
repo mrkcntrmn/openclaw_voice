@@ -699,7 +699,9 @@ describe("handleVoiceConnect", () => {
 
 describe("voice debug logging", () => {
   beforeEach(() => {
-    window.localStorage.clear();
+    if (typeof window !== "undefined") {
+      window.localStorage.clear();
+    }
   });
 
   it("stays silent without the browser debug gate", async () => {
