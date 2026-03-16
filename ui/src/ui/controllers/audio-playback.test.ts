@@ -77,6 +77,18 @@ describe("AudioPlayback", () => {
     playback.stop();
   });
 
+  it("keeps an initial playback lead to absorb websocket jitter", () => {
+    const playback = new AudioPlayback(16000);
+    playback.start();
+
+    const buffer = new Int16Array(320).buffer;
+    playback.enqueue(buffer);
+
+    const context = createdContexts[0];
+    const startTime = context?.sources[0]?.start.mock.calls[0]?.[0];
+    expect(startTime).toBeCloseTo(0.09, 3);
+  });
+
   it("drops buffered backlog and resumes near real time when playback falls behind", () => {
     const debug = vi.fn();
     const playback = new AudioPlayback(16000, {
@@ -103,7 +115,7 @@ describe("AudioPlayback", () => {
         .slice(0, resetIndex)
         .some((source) => source.stop.mock.calls.length > 0),
     ).toBe(true);
-    expect(startTimes?.[resetIndex]).toBeCloseTo(0.03, 3);
+    expect(startTimes?.[resetIndex]).toBeCloseTo(0.09, 3);
     expect(playback.getBufferedAheadSec()).toBeLessThanOrEqual(0.35);
     expect(debug).toHaveBeenCalledWith(
       "voice playback backlog reset",

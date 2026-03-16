@@ -1,4 +1,5 @@
-const READY_LATENCY_PADDING_SEC = 0.03;
+const PLAYBACK_TARGET_LEAD_SEC = 0.09;
+const PLAYBACK_MIN_START_LEAD_SEC = 0.02;
 const DEFAULT_PLAYBACK_BACKLOG_CAP_SEC = 0.35;
 
 type AudioPlaybackOptions = {
@@ -30,11 +31,13 @@ export class AudioPlayback {
     this.gain = this.context.createGain();
     this.gain.gain.value = 1;
     this.gain.connect(this.context.destination);
-    this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
+    this.resetScheduleLead();
     this.firstBufferScheduled = false;
     this.options.onDebug?.("voice playback context", {
       transportSampleRateHz: this.sampleRateHz,
       contextSampleRateHz: this.context.sampleRate,
+      targetLeadSec: PLAYBACK_TARGET_LEAD_SEC,
+      minStartLeadSec: PLAYBACK_MIN_START_LEAD_SEC,
       backlogCapSec: this.options.backlogCapSec ?? DEFAULT_PLAYBACK_BACKLOG_CAP_SEC,
     });
   }
@@ -98,13 +101,20 @@ export class AudioPlayback {
         byteLength: payload.byteLength,
       });
       this.clearSources();
-      this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
+      this.resetScheduleLead();
     }
 
-    const startTime = Math.max(
-      this.context.currentTime + READY_LATENCY_PADDING_SEC,
-      this.nextStartTime,
-    );
+    const minStartTime = this.context.currentTime + PLAYBACK_MIN_START_LEAD_SEC;
+    const startTime = Math.max(minStartTime, this.nextStartTime);
+    if (this.firstBufferScheduled && this.nextStartTime < minStartTime) {
+      this.options.onDebug?.("voice playback underrun", {
+        transportSampleRateHz: this.sampleRateHz,
+        contextSampleRateHz: this.context.sampleRate,
+        bufferedAheadSec,
+        byteLength: payload.byteLength,
+        recoveredLeadSec: Math.max(0, startTime - this.context.currentTime),
+      });
+    }
     if (!this.firstBufferScheduled) {
       this.firstBufferScheduled = true;
       this.options.onDebug?.("voice playback buffer scheduled", {
@@ -123,8 +133,17 @@ export class AudioPlayback {
   interrupt(): void {
     this.clearSources();
     if (this.context) {
-      this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
+      this.resetScheduleLead();
     }
+  }
+
+  private resetScheduleLead(): void {
+    if (!this.context) {
+      this.nextStartTime = 0;
+      return;
+    }
+    // Keep a modest lead so websocket jitter does not turn into audible gaps.
+    this.nextStartTime = this.context.currentTime + PLAYBACK_TARGET_LEAD_SEC;
   }
 
   private clearSources(): void {
