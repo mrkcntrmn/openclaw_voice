@@ -144,7 +144,7 @@ describe("voice protocol validators", () => {
         expiresAt: 1_234,
         sessionKey: "voice:browser:test",
         provider: "openai-realtime",
-        modelId: "gpt-4o-realtime-preview",
+        modelId: "gpt-realtime",
         transport: {
           wsPath: "/voice/ws",
           sampleRateHz: 16_000,
@@ -171,7 +171,7 @@ describe("voice protocol validators", () => {
         type: "ready",
         sessionKey: "voice:browser:test",
         provider: "openai-realtime",
-        modelId: "gpt-4o-realtime-preview",
+        modelId: "gpt-realtime",
         transport: {
           sampleRateHz: 24_000,
           inputSampleRateHz: 16_000,

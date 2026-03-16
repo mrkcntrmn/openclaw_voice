@@ -38,9 +38,10 @@ import {
   type VoiceHistoryTurn,
 } from "./transcript.js";
 
-const DEFAULT_OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview";
+const DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime";
 const DEFAULT_GEMINI_LIVE_MODEL = "gemini-2.0-flash-exp";
 const DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+const DEFAULT_OPENAI_REALTIME_VOICE = "marin";
 const VOICE_PROVIDER_TRANSPORT_READY_TIMEOUT_MS = 1_500;
 const DEBUG_OPENAI_FORCE_COMMIT_IDLE_MS = 1_500;
 const DEBUG_OPENAI_FORCE_COMMIT_QUIET_FRAME_COUNT = 60;
@@ -381,6 +382,31 @@ function defaultTranscriptionModelIdForProvider(providerId: string): string | un
   return undefined;
 }
 
+function defaultVoiceIdForProvider(providerId: string): string | undefined {
+  const normalized = providerId.trim().toLowerCase();
+  if (normalized.includes("openai")) {
+    return DEFAULT_OPENAI_REALTIME_VOICE;
+  }
+  return undefined;
+}
+
+function normalizeOpenAIRealtimeAudioFormat(value: unknown): string {
+  const normalized = normalizeNonEmptyString(value);
+  if (!normalized || normalized === "pcm16" || normalized === "audio/pcm") {
+    return "audio/pcm";
+  }
+  return normalized;
+}
+
+function resolveResponseId(event: Record<string, unknown>): string | undefined {
+  const direct = normalizeNonEmptyString(event.response_id);
+  if (direct) {
+    return direct;
+  }
+  const response = isRecord(event.response) ? event.response : null;
+  return normalizeNonEmptyString(response?.id);
+}
+
 function resolveRealtimeAudioSection(
   session: Record<string, unknown> | null,
   direction: "input" | "output",
@@ -549,12 +575,17 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
   private bootstrapOnlyWarningEmitted = false;
   private providerId = "openai-realtime";
   private modelId = DEFAULT_OPENAI_REALTIME_MODEL;
+  private sessionVoiceId = DEFAULT_OPENAI_REALTIME_VOICE;
   private inputSampleRateHz = defaultVoiceSampleRateHzForProvider("openai-realtime");
   private outputSampleRateHz = defaultVoiceSampleRateHzForProvider("openai-realtime");
   private speechActive = false;
   private currentTurnResponseCreated = false;
   private currentTurnQuietFrames = 0;
   private currentTurnFallbackIssued = false;
+  private currentResponseId: string | null = null;
+  private currentResponseStartedAt: number | null = null;
+  private currentResponseHasAssistantTranscript = false;
+  private currentResponseHasAudio = false;
   private forceCommitTimer: ReturnType<typeof setTimeout> | null = null;
   private providerSessionAcknowledged = false;
   private transportReadyResolve: (() => void) | null = null;
@@ -569,6 +600,10 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
 
     this.providerId = options.providerId;
     this.modelId = options.modelId;
+    this.sessionVoiceId =
+      normalizeNonEmptyString(options.provider.voiceId) ??
+      defaultVoiceIdForProvider(options.providerId) ??
+      DEFAULT_OPENAI_REALTIME_VOICE;
     this.inputSampleRateHz = options.sampleRateHz;
     this.outputSampleRateHz = options.sampleRateHz;
     this.audioFramesSent = 0;
@@ -588,6 +623,10 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     this.currentTurnResponseCreated = false;
     this.currentTurnQuietFrames = 0;
     this.currentTurnFallbackIssued = false;
+    this.currentResponseId = null;
+    this.currentResponseStartedAt = null;
+    this.currentResponseHasAssistantTranscript = false;
+    this.currentResponseHasAudio = false;
     this.providerSessionAcknowledged = false;
     this.clearForceCommitTimer();
 
@@ -642,20 +681,31 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       } satisfies VoiceErrorEvent);
     });
 
-    const inputAudioFormatType = normalizeNonEmptyString(options.provider.inputAudioFormat);
-    const outputAudioFormatType = normalizeNonEmptyString(options.provider.outputAudioFormat);
-    const inputFormat = inputAudioFormatType === "audio/pcm" || !inputAudioFormatType ? "pcm16" : inputAudioFormatType;
-    const outputFormat = outputAudioFormatType === "audio/pcm" || !outputAudioFormatType ? "pcm16" : outputAudioFormatType;
+    const inputFormat = normalizeOpenAIRealtimeAudioFormat(options.provider.inputAudioFormat);
+    const outputFormat = normalizeOpenAIRealtimeAudioFormat(options.provider.outputAudioFormat);
 
     const sessionUpdate: Record<string, unknown> = {
       type: "session.update",
       session: {
         instructions: options.instructions,
-        modalities: ["text", "audio"],
-        input_audio_format: inputFormat,
-        output_audio_format: outputFormat,
-        turn_detection: {
-          type: "server_vad",
+        output_modalities: ["audio"],
+        voice: this.sessionVoiceId,
+        audio: {
+          input: {
+            format: {
+              type: inputFormat,
+              rate: options.sampleRateHz,
+            },
+            turn_detection: {
+              type: "server_vad",
+            },
+          },
+          output: {
+            format: {
+              type: outputFormat,
+              rate: options.sampleRateHz,
+            },
+          },
         },
         tools: toOpenAIRealtimeTools(options.tools),
         tool_choice: "auto",
@@ -668,11 +718,16 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
 
     if (transcriptionModelId) {
       const session = sessionUpdate.session as Record<string, unknown>;
-      session.input_audio_transcription = { model: transcriptionModelId };
+      const audio = isRecord(session.audio) ? session.audio : null;
+      const input = isRecord(audio?.input) ? audio.input : null;
+      if (input) {
+        input.transcription = { model: transcriptionModelId };
+      }
     }
     debugVoice("voice provider bootstrap", {
       providerId: options.providerId,
       modelId: options.modelId,
+      voiceId: this.sessionVoiceId,
       sampleRateHz: options.sampleRateHz,
       toolCount: options.tools.length,
       historyCount: options.history.length,
@@ -756,6 +811,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
   close(): void {
     debugVoice("voice provider close", { providerId: this.providerId });
     this.clearForceCommitTimer();
+    this.resetAssistantResponseTracking();
     this.rejectTransportReady(new Error("openai realtime websocket closed"));
     this.ws?.close();
     this.ws = null;
@@ -951,6 +1007,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       providerId: this.providerId,
       eventType,
       modalities,
+      voiceId: normalizeNonEmptyString(session?.voice),
       turnDetectionType: normalizeNonEmptyString(turnDetection?.type),
       transcriptionModel: normalizeNonEmptyString(transcription?.model),
       inputAudioFormat: inputFormat?.type,
@@ -1027,6 +1084,51 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     }
   }
 
+  private ensureAssistantResponseTracking(event: Record<string, unknown>): void {
+    const responseId = resolveResponseId(event);
+    if (this.currentResponseStartedAt === null) {
+      this.currentResponseStartedAt = Date.now();
+      this.currentResponseId = responseId ?? null;
+      this.currentResponseHasAssistantTranscript = false;
+      this.currentResponseHasAudio = false;
+      return;
+    }
+    if (responseId && responseId !== this.currentResponseId) {
+      this.currentResponseStartedAt = Date.now();
+      this.currentResponseId = responseId;
+      this.currentResponseHasAssistantTranscript = false;
+      this.currentResponseHasAudio = false;
+      return;
+    }
+    if (responseId && !this.currentResponseId) {
+      this.currentResponseId = responseId;
+    }
+  }
+
+  private resetAssistantResponseTracking(): void {
+    this.currentResponseId = null;
+    this.currentResponseStartedAt = null;
+    this.currentResponseHasAssistantTranscript = false;
+    this.currentResponseHasAudio = false;
+  }
+
+  private finalizeAssistantResponseTracking(eventType: string): void {
+    if (this.currentResponseHasAssistantTranscript && !this.currentResponseHasAudio) {
+      debugVoice("voice provider warning", {
+        providerId: this.providerId,
+        modelId: this.modelId,
+        reason: "assistant-response-without-audio",
+        eventType,
+        responseId: this.currentResponseId ?? undefined,
+        elapsedMs:
+          this.currentResponseStartedAt === null
+            ? undefined
+            : voiceDebugElapsedMs(this.currentResponseStartedAt),
+      });
+    }
+    this.resetAssistantResponseTracking();
+  }
+
   private handleEvent(event: Record<string, unknown>): void {
     const type = normalizeNonEmptyString(event.type);
     if (!type) {
@@ -1088,6 +1190,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         this.maybeWarnIfProviderStalled();
         return;
       case "response.created":
+        this.ensureAssistantResponseTracking(event);
         if (this.firstResponseCreatedAt === null) {
           this.firstResponseCreatedAt = Date.now();
         }
@@ -1096,6 +1199,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         this.emit("state", { state: "responding" } satisfies VoiceStateEvent);
         return;
       case "response.done":
+        this.finalizeAssistantResponseTracking(type);
         this.speechActive = false;
         this.currentTurnResponseCreated = false;
         this.currentTurnQuietFrames = 0;
@@ -1137,6 +1241,8 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       case "response.output_audio_transcript.delta": {
         const delta = normalizeTranscriptDelta(event.delta);
         if (delta) {
+          this.ensureAssistantResponseTracking(event);
+          this.currentResponseHasAssistantTranscript = true;
           if (this.firstTranscriptAt === null) {
             this.firstTranscriptAt = Date.now();
           }
@@ -1153,6 +1259,8 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       case "response.output_audio_transcript.done": {
         const transcript = normalizeNonEmptyString(event.transcript);
         if (transcript) {
+          this.ensureAssistantResponseTracking(event);
+          this.currentResponseHasAssistantTranscript = true;
           if (this.firstTranscriptAt === null) {
             this.firstTranscriptAt = Date.now();
           }
@@ -1169,9 +1277,23 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       case "response.output_audio.delta": {
         const delta = normalizeNonEmptyString(event.delta);
         if (delta) {
+          this.ensureAssistantResponseTracking(event);
           const chunk = Buffer.from(delta, "base64");
           if (this.firstAudioResponseAt === null) {
             this.firstAudioResponseAt = Date.now();
+          }
+          if (!this.currentResponseHasAudio) {
+            this.currentResponseHasAudio = true;
+            debugVoice("voice provider audio first-chunk", {
+              providerId: this.providerId,
+              modelId: this.modelId,
+              responseId: this.currentResponseId ?? undefined,
+              byteLength: chunk.byteLength,
+              elapsedMs:
+                this.currentResponseStartedAt === null
+                  ? undefined
+                  : voiceDebugElapsedMs(this.currentResponseStartedAt),
+            });
           }
           debugVoice("voice provider audio", {
             providerId: this.providerId,

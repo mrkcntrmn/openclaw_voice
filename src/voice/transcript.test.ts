@@ -122,14 +122,14 @@ describe("voice transcript logging", () => {
       role: "user",
       text: "Hello there",
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
     });
 
     expect(sessionState.appendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         role: "user",
         provider: "openai-realtime",
-        model: "gpt-4o-realtime-preview",
+        model: "gpt-realtime",
       }),
     );
     expect(debugState.debugCalls).toEqual(

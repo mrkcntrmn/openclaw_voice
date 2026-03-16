@@ -7,7 +7,7 @@ const TEST_PAYLOAD = {
   cfg: {} as OpenClawConfig,
   voice: { provider: "openai-realtime" } as VoiceConfig,
   providerId: "openai-realtime",
-  modelId: "gpt-4o-realtime-preview",
+  modelId: "gpt-realtime",
   sessionKey: "voice:browser:test",
 };
 

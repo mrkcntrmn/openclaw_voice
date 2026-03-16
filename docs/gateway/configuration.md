@@ -114,13 +114,14 @@ When validation fails:
         providers: {
           "openai-realtime": {
             apiKey: "openai_api_key",
-            modelId: "gpt-4o-realtime-preview",
+            modelId: "gpt-realtime",
+            voiceId: "marin",
           },
         },
         browser: {
           enabled: true,
           wsPath: "/voice/ws",
-          sampleRateHz: 16000,
+          sampleRateHz: 24000,
           channels: 1,
           frameDurationMs: 20,
         },
@@ -136,6 +137,7 @@ When validation fails:
     ```
 
     - The Control UI calls `voice.session.create`, then starts `/voice/ws` with a one-time ticket.
+    - OpenAI Realtime browser voice uses `gpt-realtime` by default and falls back to `voiceId: "marin"` unless you override it.
     - Final provider transcripts are written into the same shared chat history as text chat.
     - `talk` remains supported only as a backward-compatible input for legacy Talk clients.
     - `plugins.entries.voice-call.config` is deprecated and does not configure browser voice.

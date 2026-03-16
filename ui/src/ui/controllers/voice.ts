@@ -904,6 +904,10 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
   let captureSilenceWarningEmitted = false;
   let transcriptReceived = false;
   let transcriptWarningTimer: number | null = null;
+  let inboundPlaybackFrames = 0;
+  let assistantPlaybackTurnStartedAt: number | null = null;
+  let assistantPlaybackFinalTranscriptSeen = false;
+  let assistantPlaybackAudioReceived = false;
   const refreshState: HistoryRefreshState = {
     timer: null,
     inFlight: false,
@@ -919,6 +923,39 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
     if (transcriptWarningTimer !== null) {
       window.clearTimeout(transcriptWarningTimer);
       transcriptWarningTimer = null;
+    }
+  };
+
+  const trackAssistantPlaybackTurnStarted = () => {
+    if (assistantPlaybackTurnStartedAt !== null) {
+      return;
+    }
+    assistantPlaybackTurnStartedAt = Date.now();
+    assistantPlaybackFinalTranscriptSeen = false;
+    assistantPlaybackAudioReceived = false;
+  };
+
+  const clearAssistantPlaybackTurnTracking = () => {
+    assistantPlaybackTurnStartedAt = null;
+    assistantPlaybackFinalTranscriptSeen = false;
+    assistantPlaybackAudioReceived = false;
+  };
+
+  const finalizeAssistantPlaybackTurnTracking = (trigger: string) => {
+    if (assistantPlaybackTurnStartedAt === null) {
+      return;
+    }
+    if (assistantPlaybackFinalTranscriptSeen && !assistantPlaybackAudioReceived) {
+      debugVoice("voice playback warning", {
+        sessionKey: host.voiceSessionKey ?? host.sessionKey,
+        providerId: host.voiceProvider,
+        reason: "assistant-transcript-without-playback-audio",
+        trigger,
+        elapsedMs: voiceDebugElapsedMs(assistantPlaybackTurnStartedAt),
+      });
+    }
+    if (assistantPlaybackFinalTranscriptSeen || assistantPlaybackAudioReceived) {
+      clearAssistantPlaybackTurnTracking();
     }
   };
 
@@ -1107,6 +1144,7 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
     closing = true;
     streamAudioEnabled = false;
     refreshState.disposed = true;
+    finalizeAssistantPlaybackTurnTracking("teardown");
 
     resetVoiceState(host, params?.preserveError === true);
 
@@ -1309,6 +1347,11 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
           case "state": {
             const nextState = normalizeString(parsed.state);
             const detail = normalizeString(parsed.detail);
+            if (nextState === "responding") {
+              trackAssistantPlaybackTurnStarted();
+            } else if (nextState === "connected" || nextState === "closed") {
+              finalizeAssistantPlaybackTurnTracking(nextState);
+            }
             host.voiceStatus = formatVoiceStatus(nextState, detail);
             debugVoice("voice control frame", {
               frameType: "state",
@@ -1328,6 +1371,12 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
             const text = normalizeTranscriptText(parsed.text, final);
             if ((role !== "user" && role !== "assistant") || !text) {
               return;
+            }
+            if (role === "assistant") {
+              trackAssistantPlaybackTurnStarted();
+              if (final) {
+                assistantPlaybackFinalTranscriptSeen = true;
+              }
             }
             transcriptReceived = true;
             clearTranscriptWarning();
@@ -1387,12 +1436,24 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
         return;
       }
       if (event.data instanceof ArrayBuffer) {
+        inboundPlaybackFrames += 1;
+        trackAssistantPlaybackTurnStarted();
+        assistantPlaybackAudioReceived = true;
         debugVoice("voice websocket receive", {
           sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
           providerId: host.voiceProvider ?? providerId,
           frameType: "audio",
+          audioSequence: inboundPlaybackFrames,
           byteLength: event.data.byteLength,
         });
+        if (inboundPlaybackFrames === 1) {
+          debugVoice("voice playback event", {
+            sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
+            providerId: host.voiceProvider ?? providerId,
+            state: "first-chunk-received",
+            byteLength: event.data.byteLength,
+          });
+        }
         playback.enqueue(event.data);
         debugVoice("voice playback event", {
           sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
@@ -1404,12 +1465,24 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
       }
       if (event.data instanceof Blob) {
         const blobSize = typeof event.data.size === "number" ? event.data.size : undefined;
+        inboundPlaybackFrames += 1;
+        trackAssistantPlaybackTurnStarted();
+        assistantPlaybackAudioReceived = true;
         debugVoice("voice websocket receive", {
           sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
           providerId: host.voiceProvider ?? providerId,
           frameType: "audio-blob",
+          audioSequence: inboundPlaybackFrames,
           byteLength: blobSize,
         });
+        if (inboundPlaybackFrames === 1) {
+          debugVoice("voice playback event", {
+            sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
+            providerId: host.voiceProvider ?? providerId,
+            state: "first-chunk-received",
+            byteLength: blobSize,
+          });
+        }
         void event.data.arrayBuffer().then((payload) => {
           debugVoice("voice playback event", {
             sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,

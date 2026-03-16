@@ -60,7 +60,7 @@ vi.mock("../voice/runtime.js", () => ({
     voice: { provider: "openai-realtime" },
     providerId: "openai-realtime",
     provider: { apiKey: "secret" },
-    modelId: "gpt-4o-realtime-preview",
+    modelId: "gpt-realtime",
     browser: {
       enabled: true,
       wsPath: "/voice/ws",
@@ -108,7 +108,7 @@ vi.mock("../voice/runtime.js", () => ({
     return {
       resolved: {
         providerId: "openai-realtime",
-        modelId: "gpt-4o-realtime-preview",
+        modelId: "gpt-realtime",
         browser: {
           sampleRateHz: 24000,
           channels: 1,
@@ -117,6 +117,13 @@ vi.mock("../voice/runtime.js", () => ({
         deployment: {
           websocket: {},
         },
+      },
+      adapter: {
+        getTransportConfig: () => ({
+          sampleRateHz: 24000,
+          inputSampleRateHz: 24000,
+          outputSampleRateHz: 24000,
+        }),
       },
       orchestrator,
       connect: async () => {
@@ -141,7 +148,7 @@ async function writeVoiceConfig(): Promise<void> {
       providers: {
         "openai-realtime": {
           apiKey: "test-api-key",
-          modelId: "gpt-4o-realtime-preview",
+          modelId: "gpt-realtime",
         },
       },
       browser: {
@@ -264,6 +271,50 @@ describe("gateway voice debug logging", () => {
         );
       });
       expect(debugState.payloadCalls).toEqual([]);
+    } finally {
+      gatewayWs.close();
+      voiceWs.close();
+    }
+  });
+
+  it("warns when an assistant transcript finishes without any relayed audio", async () => {
+    process.env.OPENCLAW_DEBUG_VOICE = "1";
+
+    const gatewayWs = await openGatewayWs(startedServer.port);
+    const connect = await connectReq(gatewayWs, { scopes: ["operator.read"] });
+    expect(connect.ok).toBe(true);
+
+    const bootstrap = await rpcReq<{ ticket?: string }>(gatewayWs, "voice.session.create", {
+      sessionKey: "voice:test-debug-missing-audio",
+    });
+    expect(bootstrap.ok).toBe(true);
+
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      voiceWs.send(JSON.stringify({ type: "start", ticket: bootstrap.payload?.ticket }));
+      await onceMessage(voiceWs, (message) => message.type === "ready");
+      const runtime = runtimeState.runtimes[0];
+      runtime?.orchestrator.emit("state", { state: "responding" });
+      runtime?.orchestrator.emit("transcript", {
+        role: "assistant",
+        text: "hello there",
+        final: true,
+      });
+      runtime?.orchestrator.emit("state", { state: "connected" });
+      await onceMessage(voiceWs, (message) => message.type === "transcript");
+
+      expect(debugState.debugCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            subsystem: "gateway/voice",
+            message: "voice relay warning",
+            meta: expect.objectContaining({
+              reason: "assistant-transcript-without-relayed-audio",
+              trigger: "connected",
+            }),
+          }),
+        ]),
+      );
     } finally {
       gatewayWs.close();
       voiceWs.close();

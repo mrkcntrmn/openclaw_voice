@@ -1659,7 +1659,8 @@ Canonical browser/dashboard voice config. This drives `voice.config`, `voice.ses
     providers: {
       "openai-realtime": {
         apiKey: "openai_api_key",
-        modelId: "gpt-4o-realtime-preview",
+        modelId: "gpt-realtime",
+        voiceId: "marin",
       },
       "google-gemini-live": {
         apiKey: "gemini_api_key",
@@ -1669,7 +1670,7 @@ Canonical browser/dashboard voice config. This drives `voice.config`, `voice.ses
     browser: {
       enabled: true,
       wsPath: "/voice/ws",
-      sampleRateHz: 16000,
+      sampleRateHz: 24000,
       channels: 1,
       frameDurationMs: 20,
       authTimeoutMs: 10000,
@@ -1695,7 +1696,8 @@ Canonical browser/dashboard voice config. This drives `voice.config`, `voice.ses
 - `voice` is the canonical browser voice config surface.
 - Control UI browser voice preflights with `voice.config`, then bootstraps with `voice.session.create`, opens `/voice/ws`, and sends a one-time `ticket` in the `start` frame.
 - Browser MVP constraints are strict: `browser.channels` must stay `1`, `browser.vad` must stay `"provider"`, and `session.sharedChatHistory` must stay `true`.
-- `browser.wsPath` defaults to `/voice/ws`; browser transport defaults to 16 kHz mono PCM16.
+- `browser.wsPath` defaults to `/voice/ws`; OpenAI Realtime browser transport defaults to 24 kHz mono PCM16, while Gemini Live stays at 16 kHz.
+- OpenAI Realtime browser voice uses `gpt-realtime` and defaults `voice.providers.openai-realtime.voiceId` to `marin` when unset.
 - Final provider transcripts are appended to normal chat history when `session.persistTranscripts` and `session.sharedChatHistory` are enabled (both default to `true`).
 - `deployment.websocket.maxSessionMinutes` sends a final `voice session timeout` error before the browser websocket closes.
 - `providers.*.apiKey` accept plaintext strings or SecretRef objects.

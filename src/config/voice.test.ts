@@ -13,7 +13,7 @@ describe("normalizeVoiceConfig", () => {
         provider: "openai-realtime",
         providers: {
           "openai-realtime": {
-            modelId: "gpt-4o-realtime-preview",
+            modelId: "gpt-realtime",
             apiKey: "sk-talk",
           },
         },
@@ -23,7 +23,7 @@ describe("normalizeVoiceConfig", () => {
     } as OpenClawConfig);
 
     expect(normalized.voice?.provider).toBe("openai-realtime");
-    expect(normalized.voice?.providers?.["openai-realtime"]?.modelId).toBe("gpt-4o-realtime-preview");
+    expect(normalized.voice?.providers?.["openai-realtime"]?.modelId).toBe("gpt-realtime");
     expect(normalized.voice?.session?.interruptOnSpeech).toBe(false);
     expect(normalized.voice?.session?.silenceTimeoutMs).toBe(1500);
   });
@@ -34,7 +34,7 @@ describe("normalizeVoiceConfig", () => {
         provider: "openai-realtime",
         providers: {
           "openai-realtime": {
-            modelId: "gpt-4o-realtime-preview",
+            modelId: "gpt-realtime",
             apiKey: "sk-talk",
           },
         },

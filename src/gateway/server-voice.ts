@@ -168,12 +168,58 @@ function bindRuntimeEvents(
   meta: VoiceLogContext & { sessionKey: string; providerId: string },
 ): void {
   let outboundAudioSeq = 0;
+  let assistantTurnStartedAt: number | null = null;
+  let assistantTranscriptFinalSeen = false;
+  let assistantAudioRelayed = false;
+
+  const trackAssistantTurnStarted = () => {
+    if (assistantTurnStartedAt !== null) {
+      return;
+    }
+    assistantTurnStartedAt = Date.now();
+    assistantTranscriptFinalSeen = false;
+    assistantAudioRelayed = false;
+  };
+
+  const clearAssistantTurnTracking = () => {
+    assistantTurnStartedAt = null;
+    assistantTranscriptFinalSeen = false;
+    assistantAudioRelayed = false;
+  };
+
+  const finalizeAssistantTurnTracking = (trigger: string) => {
+    if (assistantTurnStartedAt === null) {
+      return;
+    }
+    if (assistantTranscriptFinalSeen && !assistantAudioRelayed) {
+      debugVoice("voice relay warning", {
+        ...meta,
+        reason: "assistant-transcript-without-relayed-audio",
+        trigger,
+        elapsedMs: voiceDebugElapsedMs(assistantTurnStartedAt),
+      });
+    }
+    if (assistantTranscriptFinalSeen || assistantAudioRelayed) {
+      clearAssistantTurnTracking();
+    }
+  };
 
   runtime.orchestrator.on("state", (event: VoiceStateEvent) => {
+    if (event.state === "responding") {
+      trackAssistantTurnStarted();
+    } else if (event.state === "connected" || event.state === "closed") {
+      finalizeAssistantTurnTracking(event.state);
+    }
     debugVoice("voice relay frame", { ...meta, frameType: "state", state: event.state, detail: event.detail });
     sendJson(ws, { type: "state", ...event }, meta);
   });
   runtime.orchestrator.on("transcript", (event: VoiceTranscriptEvent) => {
+    if (event.role === "assistant") {
+      trackAssistantTurnStarted();
+      if (event.final) {
+        assistantTranscriptFinalSeen = true;
+      }
+    }
     debugVoice("voice relay frame", { ...meta, frameType: "transcript", role: event.role, final: event.final, textLength: event.text.length });
     debugVoicePayload("voice relay frame payload", event, { ...meta, frameType: "transcript" });
     sendJson(ws, { type: "transcript", ...event }, meta);
@@ -196,6 +242,8 @@ function bindRuntimeEvents(
     if (ws.readyState !== WebSocket.OPEN) {
       return;
     }
+    trackAssistantTurnStarted();
+    assistantAudioRelayed = true;
     outboundAudioSeq += 1;
     debugVoice("voice websocket send", {
       ...meta,

@@ -140,7 +140,7 @@ function createConnectOptions() {
   return {
     provider: {} as never,
     providerId: "openai-realtime",
-    modelId: "gpt-4o-realtime-preview",
+    modelId: "gpt-realtime",
     sampleRateHz: 24_000,
     instructions: "Keep it concise.",
     tools: [],
@@ -152,8 +152,7 @@ function createLiveConnectOptions(providerId: string, apiKey: string, tools: unk
   return {
     provider: { apiKey } as never,
     providerId,
-    modelId:
-      providerId === "gemini-live" ? "gemini-2.0-flash-exp" : "gpt-4o-realtime-preview",
+    modelId: providerId === "gemini-live" ? "gemini-2.0-flash-exp" : "gpt-realtime",
     sampleRateHz: providerId === "gemini-live" ? 16_000 : 24_000,
     instructions: "Keep it concise.",
     tools,
@@ -250,7 +249,7 @@ describe("resolveVoiceSessionConfig", () => {
           provider: "gemini-live",
           providers: {
             "gemini-live": { apiKey: "sk-gemini", modelId: "gemini-custom" },
-            "openai-realtime": { apiKey: "sk-openai", modelId: "gpt-4o-realtime-preview" },
+            "openai-realtime": { apiKey: "sk-openai", modelId: "gpt-realtime" },
           },
         },
       } as never,
@@ -259,7 +258,7 @@ describe("resolveVoiceSessionConfig", () => {
 
     expect(resolved.providerId).toBe("openai-realtime");
     expect(resolved.provider.apiKey).toBe("sk-openai");
-    expect(resolved.modelId).toBe("gpt-4o-realtime-preview");
+    expect(resolved.modelId).toBe("gpt-realtime");
   });
 
   it("resolves env-backed SecretRef api keys", async () => {
@@ -391,10 +390,18 @@ describe("voice adapters", () => {
     expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
       type: "session.update",
       session: {
-        input_audio_format: "pcm16",
-        output_audio_format: "pcm16",
-        turn_detection: { type: "server_vad" },
-        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+        output_modalities: ["audio"],
+        voice: "marin",
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 24_000 },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad" },
+          },
+          output: {
+            format: { type: "audio/pcm", rate: 24_000 },
+          },
+        },
         tools: [
           {
             type: "function",
@@ -410,6 +417,7 @@ describe("voice adapters", () => {
         ],
       },
     });
+    expect(JSON.parse(String(ws?.sent[0])).session).not.toHaveProperty("modalities");
 
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: "Good" });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: " morning" });
@@ -490,6 +498,21 @@ describe("voice adapters", () => {
       inputSampleRateHz: 16_000,
       outputSampleRateHz: 24_000,
       sampleRateHz: 24_000,
+    });
+  });
+
+  it("passes through an explicit OpenAI Realtime voiceId", async () => {
+    const adapter = createVoiceAdapter("openai-realtime");
+    const ws = await connectOpenAIAdapter(adapter, {
+      ...createLiveConnectOptions("openai-realtime", "sk-openai"),
+      provider: { apiKey: "sk-openai", voiceId: "cedar" } as never,
+    });
+
+    expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
+      type: "session.update",
+      session: {
+        voice: "cedar",
+      },
     });
   });
 
@@ -579,7 +602,7 @@ describe("VoiceSessionOrchestrator", () => {
       },
       sessionKey: "voice:browser:test-session",
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
       persistTranscripts: true,
       pauseOnToolCall: true,
       interruptOnSpeech: true,
@@ -598,7 +621,7 @@ describe("VoiceSessionOrchestrator", () => {
       role: "user",
       text: "hello",
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
     });
     expect(transcriptMocks.appendVoiceTranscriptMessage.mock.calls[1]?.[0]).toMatchObject({
       role: "assistant",
@@ -616,7 +639,7 @@ describe("VoiceSessionOrchestrator", () => {
       },
       sessionKey: "voice:browser:test-session",
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
       persistTranscripts: false,
       pauseOnToolCall: true,
       interruptOnSpeech: true,
@@ -639,7 +662,7 @@ describe("VoiceSessionOrchestrator", () => {
       },
       sessionKey: "voice:browser:test-session",
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
       persistTranscripts: true,
       pauseOnToolCall: true,
       interruptOnSpeech: true,
@@ -680,7 +703,7 @@ describe("VoiceSessionOrchestrator", () => {
       },
       sessionKey: "voice:browser:test-session",
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
       persistTranscripts: false,
       pauseOnToolCall: true,
       interruptOnSpeech: true,

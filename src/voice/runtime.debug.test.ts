@@ -131,7 +131,7 @@ async function connectOpenAIAdapter() {
   const connectPromise = adapter.connect({
     provider: { apiKey: "sk-test" } as never,
     providerId: "openai-realtime",
-    modelId: "gpt-4o-realtime-preview",
+    modelId: "gpt-realtime",
     sampleRateHz: 24_000,
     instructions: "Keep it concise.",
     tools: [],
@@ -143,7 +143,23 @@ async function connectOpenAIAdapter() {
   if (!ws) {
     throw new Error("expected OpenAI realtime websocket instance");
   }
-  ws.emitJson({ type: "session.created", session: { modalities: ["audio", "text"] } });
+  ws.emitJson({
+    type: "session.created",
+    session: {
+      output_modalities: ["audio"],
+      voice: "marin",
+      audio: {
+        input: {
+          format: { type: "audio/pcm", rate: 24_000 },
+          transcription: { model: "gpt-4o-mini-transcribe" },
+          turn_detection: { type: "server_vad" },
+        },
+        output: {
+          format: { type: "audio/pcm", rate: 24_000 },
+        },
+      },
+    },
+  });
   await connectPromise;
   return { adapter, ws };
 }
@@ -182,14 +198,24 @@ describe("voice runtime debug logging", () => {
     ws?.emitJson({
       type: "session.updated",
       session: {
-        modalities: ["audio", "text"],
-        turn_detection: { type: "server_vad" },
-        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+        output_modalities: ["audio"],
+        voice: "marin",
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 24_000 },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad" },
+          },
+          output: {
+            format: { type: "audio/pcm", rate: 24_000 },
+          },
+        },
         tools: [],
       },
     });
     ws?.emitJson({ type: "response.audio_transcript.delta", delta: "hello" });
     ws?.emitJson({ type: "response.audio_transcript.done", transcript: "hello there" });
+    ws?.emitJson({ type: "response.output_audio.delta", delta: Buffer.from("pcm").toString("base64") });
 
     expect(debugState.debugCalls).toEqual(
       expect.arrayContaining([
@@ -198,8 +224,21 @@ describe("voice runtime debug logging", () => {
         expect.objectContaining({ subsystem: "voice", message: "voice provider event" }),
         expect.objectContaining({ subsystem: "voice", message: "voice session diagnostics" }),
         expect.objectContaining({ subsystem: "voice", message: "voice transcript event" }),
+        expect.objectContaining({
+          subsystem: "voice",
+          message: "voice provider audio first-chunk",
+          meta: expect.objectContaining({ responseId: undefined }),
+        }),
       ]),
     );
+    expect(
+      debugState.debugCalls.find(
+        (entry) =>
+          entry.subsystem === "voice" &&
+          entry.message === "voice session diagnostics" &&
+          entry.meta?.voiceId === "marin",
+      ),
+    ).toBeTruthy();
     expect(debugState.payloadCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -221,9 +260,18 @@ describe("voice runtime debug logging", () => {
       ws?.emitJson({
         type: "session.updated",
         session: {
-          modalities: ["audio", "text"],
-          turn_detection: { type: "server_vad" },
-          input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+          output_modalities: ["audio"],
+          voice: "marin",
+          audio: {
+            input: {
+              format: { type: "audio/pcm", rate: 24_000 },
+              transcription: { model: "gpt-4o-mini-transcribe" },
+              turn_detection: { type: "server_vad" },
+            },
+            output: {
+              format: { type: "audio/pcm", rate: 24_000 },
+            },
+          },
           tools: [],
         },
       });
@@ -263,9 +311,18 @@ describe("voice runtime debug logging", () => {
     ws?.emitJson({
       type: "session.updated",
       session: {
-        modalities: ["audio", "text"],
-        turn_detection: { type: "server_vad" },
-        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+        output_modalities: ["audio"],
+        voice: "marin",
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 24_000 },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad" },
+          },
+          output: {
+            format: { type: "audio/pcm", rate: 24_000 },
+          },
+        },
         tools: [],
       },
     });
@@ -288,9 +345,18 @@ describe("voice runtime debug logging", () => {
     ws?.emitJson({
       type: "session.updated",
       session: {
-        modalities: ["audio", "text"],
-        turn_detection: { type: "server_vad" },
-        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+        output_modalities: ["audio"],
+        voice: "marin",
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 24_000 },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad" },
+          },
+          output: {
+            format: { type: "audio/pcm", rate: 24_000 },
+          },
+        },
         tools: [],
       },
     });
@@ -325,9 +391,18 @@ describe("voice runtime debug logging", () => {
       ws?.emitJson({
         type: "session.updated",
         session: {
-          modalities: ["audio", "text"],
-          turn_detection: { type: "server_vad" },
-          input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+          output_modalities: ["audio"],
+          voice: "marin",
+          audio: {
+            input: {
+              format: { type: "audio/pcm", rate: 24_000 },
+              transcription: { model: "gpt-4o-mini-transcribe" },
+              turn_detection: { type: "server_vad" },
+            },
+            output: {
+              format: { type: "audio/pcm", rate: 24_000 },
+            },
+          },
           tools: [],
         },
       });
@@ -351,6 +426,27 @@ describe("voice runtime debug logging", () => {
       vi.useRealTimers();
     }
   });
+  it("warns when an assistant transcript completes without any audio delta", async () => {
+    process.env.OPENCLAW_DEBUG_VOICE = "1";
+
+    const { ws } = await connectOpenAIAdapter();
+    ws?.emitJson({ type: "response.created", response: { id: "resp-1" } });
+    ws?.emitJson({ type: "response.output_audio_transcript.done", transcript: "hello there" });
+    ws?.emitJson({ type: "response.done", response: { id: "resp-1" } });
+
+    expect(debugState.debugCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          subsystem: "voice",
+          message: "voice provider warning",
+          meta: expect.objectContaining({
+            reason: "assistant-response-without-audio",
+            responseId: "resp-1",
+          }),
+        }),
+      ]),
+    );
+  });
   it("logs tool execution and transcript persistence when the orchestrator handles final turns", async () => {
     process.env.OPENCLAW_DEBUG_VOICE = "1";
     process.env.OPENCLAW_DEBUG_VOICE_PAYLOADS = "1";
@@ -365,7 +461,7 @@ describe("voice runtime debug logging", () => {
       toolRuntime: { definitions: [], execute },
       sessionKey: "voice:test",
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
       persistTranscripts: true,
       pauseOnToolCall: true,
       interruptOnSpeech: true,
@@ -374,7 +470,7 @@ describe("voice runtime debug logging", () => {
     await orchestrator.connect({
       provider: {} as never,
       providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
       sampleRateHz: 24_000,
       instructions: "Keep it concise.",
       tools: [],

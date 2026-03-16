@@ -11,6 +11,7 @@ export class AudioPlayback {
   private gain: GainNode | null = null;
   private sources = new Set<AudioBufferSourceNode>();
   private nextStartTime = 0;
+  private firstBufferScheduled = false;
 
   constructor(
     private sampleRateHz: number,
@@ -30,6 +31,7 @@ export class AudioPlayback {
     this.gain.gain.value = 1;
     this.gain.connect(this.context.destination);
     this.nextStartTime = this.context.currentTime + READY_LATENCY_PADDING_SEC;
+    this.firstBufferScheduled = false;
     this.options.onDebug?.("voice playback context", {
       transportSampleRateHz: this.sampleRateHz,
       contextSampleRateHz: this.context.sampleRate,
@@ -52,6 +54,7 @@ export class AudioPlayback {
     this.context = null;
     this.gain = null;
     this.nextStartTime = 0;
+    this.firstBufferScheduled = false;
   }
 
   enqueue(payload: ArrayBuffer): void {
@@ -102,6 +105,16 @@ export class AudioPlayback {
       this.context.currentTime + READY_LATENCY_PADDING_SEC,
       this.nextStartTime,
     );
+    if (!this.firstBufferScheduled) {
+      this.firstBufferScheduled = true;
+      this.options.onDebug?.("voice playback buffer scheduled", {
+        transportSampleRateHz: this.sampleRateHz,
+        contextSampleRateHz: this.context.sampleRate,
+        byteLength: payload.byteLength,
+        startDelaySec: Math.max(0, startTime - this.context.currentTime),
+        durationSec: audioBuffer.duration,
+      });
+    }
     source.start(startTime);
     this.nextStartTime = startTime + audioBuffer.duration;
     this.sources.add(source);

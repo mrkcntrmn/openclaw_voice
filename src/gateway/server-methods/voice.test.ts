@@ -78,7 +78,7 @@ describe("voice handler debug logging", () => {
       voice: { provider: "openai-realtime" },
       providerId: "openai-realtime",
       provider: { apiKey: "secret" },
-      modelId: "gpt-4o-realtime-preview",
+      modelId: "gpt-realtime",
       browser: {
         enabled: true,
         wsPath: "/voice/ws",

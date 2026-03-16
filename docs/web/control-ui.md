@@ -98,7 +98,7 @@ Flow:
 - The authenticated Control UI session calls `voice.config` as a non-secret preflight, then `voice.session.create`.
 - The Gateway returns a short-lived one-time ticket plus browser transport metadata.
 - The browser opens `/voice/ws` and starts the session with `{ "type": "start", "ticket": "..." }`.
-- Audio streams as 16 kHz mono PCM16 with `channels: 1`; provider-managed VAD and provider transcripts are the source of truth.
+- Audio streams as negotiated mono PCM16 with `channels: 1`; OpenAI Realtime defaults to 24 kHz, Gemini Live stays at 16 kHz, and provider-managed VAD plus provider transcripts are the source of truth.
 - Final user and assistant turns are appended to the normal shared chat history. Browser voice requires `session.sharedChatHistory: true`.
 
 Canonical config lives under top-level `voice`:
@@ -110,7 +110,8 @@ Canonical config lives under top-level `voice`:
     providers: {
       "openai-realtime": {
         apiKey: "openai_api_key",
-        modelId: "gpt-4o-realtime-preview",
+        modelId: "gpt-realtime",
+        voiceId: "marin",
       },
       "google-gemini-live": {
         apiKey: "gemini_api_key",
@@ -120,7 +121,7 @@ Canonical config lives under top-level `voice`:
     browser: {
       enabled: true,
       wsPath: "/voice/ws",
-      sampleRateHz: 16000,
+      sampleRateHz: 24000,
       channels: 1,
       frameDurationMs: 20,
       vad: "provider",
@@ -144,6 +145,7 @@ Canonical config lives under top-level `voice`:
 Notes:
 
 - `voice` is canonical. `talk` remains a backward-compatible input only.
+- OpenAI Realtime browser voice uses `gpt-realtime` and defaults `voice.providers.openai-realtime.voiceId` to `marin` when unset.
 - Browser voice rejects `voice.browser.channels !== 1`, `voice.browser.vad !== "provider"`, or `voice.session.sharedChatHistory === false`.
 - `deployment.websocket.maxSessionMinutes` sends a final `voice session timeout` error before `/voice/ws` closes.
 - The recommended browser flow does not send shared token/password in the `/voice/ws` start frame.

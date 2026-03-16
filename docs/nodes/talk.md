@@ -62,13 +62,14 @@ Canonical browser/dashboard voice config:
     providers: {
       "openai-realtime": {
         apiKey: "openai_api_key",
-        modelId: "gpt-4o-realtime-preview",
+        modelId: "gpt-realtime",
+        voiceId: "marin",
       },
     },
     browser: {
       enabled: true,
       wsPath: "/voice/ws",
-      sampleRateHz: 16000,
+      sampleRateHz: 24000,
       channels: 1,
       frameDurationMs: 20,
     },

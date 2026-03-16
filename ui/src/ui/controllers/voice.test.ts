@@ -286,7 +286,7 @@ function createBootstrapResponse(overrides: Record<string, unknown> = {}) {
     ticket: "voice-ticket",
     sessionKey: "voice:browser:1",
     provider: "openai-realtime",
-    modelId: "gpt-4o-realtime-preview",
+    modelId: "gpt-realtime",
     transport: {
       wsPath: "/voice/ws",
       sampleRateHz: 24000,
@@ -433,7 +433,7 @@ describe("handleVoiceConnect", () => {
         type: "ready",
         sessionKey: "voice:browser:1",
         provider: "openai-realtime",
-        modelId: "gpt-4o-realtime-preview",
+        modelId: "gpt-realtime",
         transport: {
           sampleRateHz: 24000,
         },
@@ -846,12 +846,24 @@ describe("voice debug logging", () => {
         final: false,
       }),
     );
+    ws?.emitMessage(new Int16Array([1, 2, 3, 4]).buffer);
 
     const messages = consoleDebug.mock.calls.map(([message]) => String(message));
     expect(messages.some((message) => message.includes("voice bootstrap request"))).toBe(true);
     expect(messages.some((message) => message.includes("voice websocket send"))).toBe(true);
     expect(messages.some((message) => message.includes("voice websocket receive"))).toBe(true);
     expect(messages.some((message) => message.includes("voice transcript update applied"))).toBe(true);
+    expect(messages.some((message) => message.includes("voice playback buffer scheduled"))).toBe(true);
+    expect(
+      consoleDebug.mock.calls.some(
+        ([message, meta]) =>
+          String(message).includes("voice playback event") &&
+          typeof meta === "object" &&
+          meta !== null &&
+          "state" in (meta as Record<string, unknown>) &&
+          (meta as Record<string, unknown>).state === "first-chunk-received",
+      ),
+    ).toBe(true);
     expect(messages.some((message) => message.includes("payload"))).toBe(false);
   });
 
@@ -883,6 +895,47 @@ describe("voice debug logging", () => {
     expect(messages.some((message) => message.includes("voice capture audio frame"))).toBe(true);
     expect(messages.some((message) => message.includes("voice transcript warning"))).toBe(true);
   });
+
+  it("warns when an assistant transcript completes without playback audio", async () => {
+    installBrowserVoiceGlobals();
+    window.localStorage.setItem("openclaw.debug.voice", "1");
+    const consoleDebug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const host = createHost();
+
+    await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+      }),
+    );
+    await flushPendingPromises();
+    ws?.emitMessage(JSON.stringify({ type: "state", state: "responding" }));
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "transcript",
+        role: "assistant",
+        text: "Hi there",
+        final: true,
+      }),
+    );
+    ws?.emitMessage(JSON.stringify({ type: "state", state: "connected" }));
+
+    expect(
+      consoleDebug.mock.calls.some(
+        ([message, meta]) =>
+          String(message).includes("voice playback warning") &&
+          typeof meta === "object" &&
+          meta !== null &&
+          "reason" in (meta as Record<string, unknown>) &&
+          (meta as Record<string, unknown>).reason === "assistant-transcript-without-playback-audio",
+      ),
+    ).toBe(true);
+  });
+
   it("emits payload dumps only when browser payload mode is enabled", async () => {
     installBrowserVoiceGlobals();
     window.localStorage.setItem("openclaw.debug.voice", "1");
@@ -917,4 +970,3 @@ describe("voice debug logging", () => {
     expect(messages.some((message) => message.includes("voice transcript update payload"))).toBe(true);
   });
 });
-
