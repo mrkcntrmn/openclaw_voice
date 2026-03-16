@@ -54,12 +54,45 @@ type VoiceLogContext = {
   authPath?: string;
 };
 
+type VoiceSocketTransport = {
+  sampleRateHz: number;
+  inputSampleRateHz: number;
+  outputSampleRateHz: number;
+  channels: number;
+  frameDurationMs: number;
+};
+
 function debugVoice(message: string, meta?: Record<string, unknown>): void {
   voiceDebug.debug(message, meta);
 }
 
 function debugVoicePayload(message: string, payload: unknown, meta?: Record<string, unknown>): void {
   voiceDebug.payload(message, payload, meta);
+}
+
+function resolveVoiceSocketTransport(runtime: VoiceSessionRuntime | null): VoiceSocketTransport {
+  const fallbackSampleRateHz = runtime?.resolved.browser.sampleRateHz ?? 16_000;
+  const runtimeTransport = runtime?.adapter.getTransportConfig();
+  const outputSampleRateHz =
+    typeof runtimeTransport?.outputSampleRateHz === "number"
+      ? runtimeTransport.outputSampleRateHz
+      : typeof runtimeTransport?.sampleRateHz === "number"
+        ? runtimeTransport.sampleRateHz
+        : fallbackSampleRateHz;
+  const inputSampleRateHz =
+    typeof runtimeTransport?.inputSampleRateHz === "number"
+      ? runtimeTransport.inputSampleRateHz
+      : typeof runtimeTransport?.sampleRateHz === "number"
+        ? runtimeTransport.sampleRateHz
+        : fallbackSampleRateHz;
+
+  return {
+    sampleRateHz: outputSampleRateHz,
+    inputSampleRateHz,
+    outputSampleRateHz,
+    channels: runtime?.resolved.browser.channels ?? 1,
+    frameDurationMs: runtime?.resolved.browser.frameDurationMs ?? 20,
+  };
 }
 
 function normalizeString(value: unknown): string | undefined {
@@ -210,8 +243,7 @@ async function handleVoiceConnection(params: {
   });
 
   const maxAudioDumpBytes = (): number => {
-    const sampleRateHz = runtime?.resolved.browser.sampleRateHz ?? 16_000;
-    return sampleRateHz * 2 * MAX_AUDIO_DUMP_SECONDS;
+    return resolveVoiceSocketTransport(runtime).inputSampleRateHz * 2 * MAX_AUDIO_DUMP_SECONDS;
   };
 
   const maybePersistAudioDump = (): void => {
@@ -220,16 +252,17 @@ async function handleVoiceConnection(params: {
     }
     dumpPersisted = true;
     const pcm = Buffer.concat(audioDumpChunks);
+    const transport = resolveVoiceSocketTransport(runtime);
     void persistVoiceAudioDump({
       connectionId,
       sessionKey: currentSessionKey ?? undefined,
       providerId: currentProviderId ?? undefined,
-      sampleRateHz: runtime?.resolved.browser.sampleRateHz ?? 16_000,
+      sampleRateHz: transport.inputSampleRateHz,
       pcm,
     })
       .then((dumpPath) => {
         const durationMs = roundVoiceAudioMetric(
-          (pcm.byteLength / 2 / (runtime?.resolved.browser.sampleRateHz ?? 16_000)) * 1000,
+          (pcm.byteLength / 2 / transport.inputSampleRateHz) * 1000,
         );
         debugVoice("voice audio dump", {
           ...baseMeta(),
@@ -433,6 +466,7 @@ async function handleVoiceConnection(params: {
         started = true;
         clearTimeout(authTimer);
         armSessionTimer(runtime);
+        const transport = resolveVoiceSocketTransport(runtime);
         debugVoice("voice runtime connect complete", { ...baseMeta(), sessionKey, providerId: runtime.resolved.providerId, modelId: runtime.resolved.modelId, elapsedMs: voiceDebugElapsedMs(connectStartedAt) });
         sendJson(
           params.ws,
@@ -442,9 +476,11 @@ async function handleVoiceConnection(params: {
             provider: runtime.resolved.providerId,
             modelId: runtime.resolved.modelId,
             transport: {
-              sampleRateHz: runtime.resolved.browser.sampleRateHz,
-              channels: runtime.resolved.browser.channels,
-              frameDurationMs: runtime.resolved.browser.frameDurationMs,
+              sampleRateHz: transport.sampleRateHz,
+              inputSampleRateHz: transport.inputSampleRateHz,
+              outputSampleRateHz: transport.outputSampleRateHz,
+              channels: transport.channels,
+              frameDurationMs: transport.frameDurationMs,
             },
           },
           baseMeta(),
@@ -478,7 +514,10 @@ async function handleVoiceConnection(params: {
         }
 
         const now = Date.now();
-        const metrics = measurePcm16AudioBuffer(audio, runtime.resolved.browser.sampleRateHz);
+        const metrics = measurePcm16AudioBuffer(
+          audio,
+          resolveVoiceSocketTransport(runtime).inputSampleRateHz,
+        );
         if (firstInboundAudioAt === null) {
           firstInboundAudioAt = now;
         }

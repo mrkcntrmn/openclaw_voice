@@ -120,6 +120,34 @@ class TestAdapter extends VoiceAdapter {
   override close(): void {}
 }
 
+async function flushMicrotasks(iterations = 4): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+async function connectOpenAIAdapter() {
+  const adapter = createVoiceAdapter("openai-realtime");
+  const connectPromise = adapter.connect({
+    provider: { apiKey: "sk-test" } as never,
+    providerId: "openai-realtime",
+    modelId: "gpt-4o-realtime-preview",
+    sampleRateHz: 24_000,
+    instructions: "Keep it concise.",
+    tools: [],
+    history: [],
+  });
+
+  await flushMicrotasks();
+  const ws = wsState.instances.at(-1);
+  if (!ws) {
+    throw new Error("expected OpenAI realtime websocket instance");
+  }
+  ws.emitJson({ type: "session.created", session: { modalities: ["audio", "text"] } });
+  await connectPromise;
+  return { adapter, ws };
+}
+
 describe("voice runtime debug logging", () => {
   const envSnapshot = new Map<string, string | undefined>();
 
@@ -150,19 +178,7 @@ describe("voice runtime debug logging", () => {
     process.env.OPENCLAW_DEBUG_VOICE = "1";
     process.env.OPENCLAW_DEBUG_VOICE_PAYLOADS = "1";
 
-    const adapter = createVoiceAdapter("openai-realtime");
-    await adapter.connect({
-      provider: { apiKey: "sk-test" } as never,
-      providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
-      sampleRateHz: 24_000,
-      instructions: "Keep it concise.",
-      tools: [],
-      history: [],
-    });
-
-    const ws = wsState.instances[0];
-    ws?.emitJson({ type: "session.created", session: { modalities: ["audio", "text"] } });
+    const { ws } = await connectOpenAIAdapter();
     ws?.emitJson({
       type: "session.updated",
       session: {
@@ -201,19 +217,7 @@ describe("voice runtime debug logging", () => {
     vi.setSystemTime(new Date("2026-03-12T04:25:44.000Z"));
 
     try {
-      const adapter = createVoiceAdapter("openai-realtime");
-      await adapter.connect({
-        provider: { apiKey: "sk-test" } as never,
-        providerId: "openai-realtime",
-        modelId: "gpt-4o-realtime-preview",
-        sampleRateHz: 24_000,
-        instructions: "Keep it concise.",
-        tools: [],
-        history: [],
-      });
-
-      const ws = wsState.instances[0];
-      ws?.emitJson({ type: "session.created", session: { modalities: ["audio", "text"] } });
+      const { adapter, ws } = await connectOpenAIAdapter();
       ws?.emitJson({
         type: "session.updated",
         session: {
@@ -255,19 +259,7 @@ describe("voice runtime debug logging", () => {
   it("does not force-commit a turn without the debug fallback flag", async () => {
     process.env.OPENCLAW_DEBUG_VOICE = "1";
 
-    const adapter = createVoiceAdapter("openai-realtime");
-    await adapter.connect({
-      provider: { apiKey: "sk-test" } as never,
-      providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
-      sampleRateHz: 24_000,
-      instructions: "Keep it concise.",
-      tools: [],
-      history: [],
-    });
-
-    const ws = wsState.instances[0];
-    ws?.emitJson({ type: "session.created", session: { modalities: ["audio", "text"] } });
+    const { adapter, ws } = await connectOpenAIAdapter();
     ws?.emitJson({
       type: "session.updated",
       session: {
@@ -292,19 +284,7 @@ describe("voice runtime debug logging", () => {
     process.env.OPENCLAW_DEBUG_VOICE = "1";
     process.env.OPENCLAW_DEBUG_VOICE_FORCE_COMMIT = "1";
 
-    const adapter = createVoiceAdapter("openai-realtime");
-    await adapter.connect({
-      provider: { apiKey: "sk-test" } as never,
-      providerId: "openai-realtime",
-      modelId: "gpt-4o-realtime-preview",
-      sampleRateHz: 24_000,
-      instructions: "Keep it concise.",
-      tools: [],
-      history: [],
-    });
-
-    const ws = wsState.instances[0];
-    ws?.emitJson({ type: "session.created", session: { modalities: ["audio", "text"] } });
+    const { adapter, ws } = await connectOpenAIAdapter();
     ws?.emitJson({
       type: "session.updated",
       session: {
@@ -341,19 +321,7 @@ describe("voice runtime debug logging", () => {
     vi.setSystemTime(new Date("2026-03-12T04:25:44.000Z"));
 
     try {
-      const adapter = createVoiceAdapter("openai-realtime");
-      await adapter.connect({
-        provider: { apiKey: "sk-test" } as never,
-        providerId: "openai-realtime",
-        modelId: "gpt-4o-realtime-preview",
-        sampleRateHz: 24_000,
-        instructions: "Keep it concise.",
-        tools: [],
-        history: [],
-      });
-
-      const ws = wsState.instances[0];
-      ws?.emitJson({ type: "session.created", session: { modalities: ["audio", "text"] } });
+      const { adapter, ws } = await connectOpenAIAdapter();
       ws?.emitJson({
         type: "session.updated",
         session: {

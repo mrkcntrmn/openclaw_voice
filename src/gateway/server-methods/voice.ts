@@ -39,6 +39,22 @@ function normalizeString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function buildVoiceSessionTransport(params: {
+  wsPath: string;
+  sampleRateHz: number;
+  channels: number;
+  frameDurationMs: number;
+}) {
+  return {
+    wsPath: params.wsPath,
+    sampleRateHz: params.sampleRateHz,
+    inputSampleRateHz: params.sampleRateHz,
+    outputSampleRateHz: params.sampleRateHz,
+    channels: params.channels,
+    frameDurationMs: params.frameDurationMs,
+  };
+}
+
 export const voiceHandlers: GatewayRequestHandlers = {
   "voice.config": async ({ params, respond, client }) => {
     const startedAt = Date.now();
@@ -229,12 +245,12 @@ export const voiceHandlers: GatewayRequestHandlers = {
       sessionKey,
       provider: resolved.providerId,
       modelId,
-      transport: {
+      transport: buildVoiceSessionTransport({
         wsPath: resolved.browser.wsPath,
         sampleRateHz: resolved.browser.sampleRateHz,
         channels: resolved.browser.channels,
         frameDurationMs: resolved.browser.frameDurationMs,
-      },
+      }),
       session: {
         interruptOnSpeech: resolved.session.interruptOnSpeech,
         pauseOnToolCall: resolved.session.pauseOnToolCall,

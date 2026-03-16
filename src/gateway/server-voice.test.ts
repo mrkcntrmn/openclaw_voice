@@ -41,6 +41,13 @@ type MockRuntimeRecord = {
         };
       };
     };
+    adapter: {
+      getTransportConfig: () => {
+        sampleRateHz: number;
+        inputSampleRateHz: number;
+        outputSampleRateHz: number;
+      };
+    };
     orchestrator: MockOrchestrator;
     connect: () => Promise<void>;
   };
@@ -49,6 +56,13 @@ type MockRuntimeRecord = {
 const runtimeMockState = vi.hoisted(() => ({
   runtimes: [] as MockRuntimeRecord[],
   maxSessionMinutes: undefined as number | undefined,
+  transportOverride: null as
+    | {
+        sampleRateHz?: number;
+        inputSampleRateHz?: number;
+        outputSampleRateHz?: number;
+      }
+    | null,
 }));
 
 vi.mock("../voice/runtime.js", () => {
@@ -134,6 +148,24 @@ vi.mock("../voice/runtime.js", () => {
           websocket: {
             maxSessionMinutes: runtimeMockState.maxSessionMinutes,
           },
+        },
+      },
+      adapter: {
+        getTransportConfig: () => {
+          const transportOverride = runtimeMockState.transportOverride;
+          const outputSampleRateHz =
+            transportOverride?.outputSampleRateHz ??
+            transportOverride?.sampleRateHz ??
+            sampleRateHz;
+          const inputSampleRateHz =
+            transportOverride?.inputSampleRateHz ??
+            transportOverride?.sampleRateHz ??
+            sampleRateHz;
+          return {
+            sampleRateHz: outputSampleRateHz,
+            inputSampleRateHz,
+            outputSampleRateHz,
+          };
         },
       },
       orchestrator,
@@ -292,6 +324,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   runtimeMockState.runtimes.length = 0;
   runtimeMockState.maxSessionMinutes = undefined;
+  runtimeMockState.transportOverride = null;
   await writeVoiceConfig();
 });
 
@@ -312,7 +345,13 @@ describe("gateway browser voice", () => {
         sessionKey?: string;
         provider?: string;
         modelId?: string;
-        transport?: { wsPath?: string; sampleRateHz?: number; frameDurationMs?: number };
+        transport?: {
+          wsPath?: string;
+          sampleRateHz?: number;
+          inputSampleRateHz?: number;
+          outputSampleRateHz?: number;
+          frameDurationMs?: number;
+        };
       }>(ws, "voice.session.create", {
         sessionKey: "voice:test-session",
         agentId: "main",
@@ -327,6 +366,8 @@ describe("gateway browser voice", () => {
         transport: {
           wsPath: "/voice/ws",
           sampleRateHz: 24000,
+          inputSampleRateHz: 24000,
+          outputSampleRateHz: 24000,
           frameDurationMs: 20,
         },
       });
@@ -356,7 +397,11 @@ describe("gateway browser voice", () => {
       const response = await rpcReq<{
         provider?: string;
         modelId?: string;
-        transport?: { sampleRateHz?: number };
+        transport?: {
+          sampleRateHz?: number;
+          inputSampleRateHz?: number;
+          outputSampleRateHz?: number;
+        };
       }>(ws, "voice.session.create", {
         provider: "gemini-live",
       });
@@ -367,6 +412,8 @@ describe("gateway browser voice", () => {
         modelId: "gemini-2.0-flash-exp",
         transport: {
           sampleRateHz: 16000,
+          inputSampleRateHz: 16000,
+          outputSampleRateHz: 16000,
         },
       });
     } finally {
@@ -466,6 +513,8 @@ describe("gateway browser voice", () => {
         modelId: "gpt-4o-realtime-preview",
         transport: {
           sampleRateHz: 24000,
+          inputSampleRateHz: 24000,
+          outputSampleRateHz: 24000,
         },
       });
       expect(runtimeMockState.runtimes).toHaveLength(1);
@@ -527,11 +576,48 @@ describe("gateway browser voice", () => {
         provider: "openai-realtime",
         transport: {
           sampleRateHz: 24000,
+          inputSampleRateHz: 24000,
+          outputSampleRateHz: 24000,
         },
       });
       expect(runtimeMockState.runtimes).toHaveLength(1);
       expect(runtimeMockState.runtimes[0]?.options).toMatchObject({
         sessionKey: "voice:browser:raw-auth",
+      });
+    } finally {
+      if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {
+        voiceWs.close();
+      }
+    }
+  });
+
+  it("emits negotiated split transport rates in ready frames and keeps sampleRateHz as the output alias", async () => {
+    runtimeMockState.transportOverride = {
+      inputSampleRateHz: 16_000,
+      outputSampleRateHz: 24_000,
+    };
+
+    const bootstrap = await rpcReq<{ ticket?: string }>(startedServer.ws, "voice.session.create", {
+      sessionKey: "voice:test-split-rates",
+    });
+    expect(bootstrap.ok).toBe(true);
+
+    const voiceWs = await openVoiceWs(startedServer.port);
+    try {
+      voiceWs.send(JSON.stringify({ type: "start", ticket: bootstrap.payload?.ticket }));
+      const ready = await onceMessage<{
+        type?: string;
+        transport?: {
+          sampleRateHz?: number;
+          inputSampleRateHz?: number;
+          outputSampleRateHz?: number;
+        };
+      }>(voiceWs, (message) => message.type === "ready");
+
+      expect(ready.transport).toMatchObject({
+        sampleRateHz: 24_000,
+        inputSampleRateHz: 16_000,
+        outputSampleRateHz: 24_000,
       });
     } finally {
       if (voiceWs.readyState === WebSocket.OPEN || voiceWs.readyState === WebSocket.CONNECTING) {

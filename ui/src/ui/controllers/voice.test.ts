@@ -100,6 +100,10 @@ class FakeAudioContext {
 
 class FakeAudioWorkletNode extends FakeAudioNode {
   private readonly messageListeners = new Set<(event: { data: unknown }) => void>();
+  readonly processorOptions?: {
+    targetSampleRate?: number;
+    frameDurationMs?: number;
+  };
   port = {
     onmessage: null as ((event: { data: ArrayBuffer }) => void) | null,
     addEventListener: vi.fn((type: string, listener: (event: { data: unknown }) => void) => {
@@ -111,8 +115,13 @@ class FakeAudioWorkletNode extends FakeAudioNode {
     close: vi.fn(),
   };
 
-  constructor(_context: unknown, _name: string, _options?: unknown) {
+  constructor(
+    _context: unknown,
+    _name: string,
+    options?: { processorOptions?: { targetSampleRate?: number; frameDurationMs?: number } },
+  ) {
     super();
+    this.processorOptions = options?.processorOptions;
     workletInstances.push(this);
   }
 
@@ -195,9 +204,32 @@ class FakeURL extends URL {
   static revokeObjectURL = vi.fn();
 }
 
+function createLocalStorage() {
+  const entries = new Map<string, string>();
+  return {
+    getItem: vi.fn((key: string) => entries.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => {
+      entries.set(key, value);
+    }),
+    removeItem: vi.fn((key: string) => {
+      entries.delete(key);
+    }),
+    clear: vi.fn(() => {
+      entries.clear();
+    }),
+  };
+}
+
 function installBrowserVoiceGlobals(params?: {
   getUserMedia?: () => Promise<FakeMediaStream>;
 }) {
+  const localStorage = createLocalStorage();
+  vi.stubGlobal("window", {
+    location: new URL("http://127.0.0.1:18789/app"),
+    localStorage,
+    setTimeout,
+    clearTimeout,
+  });
   Object.defineProperty(globalThis.navigator, "mediaDevices", {
     configurable: true,
     value: {
@@ -240,6 +272,12 @@ function flushAnimationFrame(now = Date.now()): void {
   rafState.callbacks.clear();
   for (const callback of callbacks) {
     callback(now);
+  }
+}
+
+async function flushPendingPromises(iterations = 4): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
   }
 }
 
@@ -401,6 +439,7 @@ describe("handleVoiceConnect", () => {
         },
       }),
     );
+    await flushPendingPromises();
     expect(host.voiceConnecting).toBe(false);
     expect(host.voiceConnected).toBe(true);
     expect(host.voiceProvider).toBe("openai-realtime");
@@ -468,6 +507,7 @@ describe("handleVoiceConnect", () => {
         },
       }),
     );
+    await flushPendingPromises();
 
     const updateCountBefore = host.requestUpdate.mock.calls.length;
     workletInstances[0]?.emitVolume(0.02);
@@ -501,7 +541,53 @@ describe("handleVoiceConnect", () => {
     expect(host.requestUpdate.mock.calls.length).toBe(updateCountBefore + 3);
   });
 
-  it("uses ready transport sample rate for playback instead of the bootstrap fallback", async () => {
+  it("waits for ready before starting capture and uses split transport sample rates", async () => {
+    installBrowserVoiceGlobals();
+    const host = createHost({
+      client: {
+        request: vi.fn(async () =>
+          createBootstrapResponse({
+            transport: {
+              wsPath: "/voice/ws",
+              sampleRateHz: 16000,
+              channels: 1,
+              frameDurationMs: 20,
+            },
+          }),
+        ),
+      },
+    });
+
+    await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    expect(workletInstances).toHaveLength(0);
+
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+        transport: {
+          sampleRateHz: 24000,
+          inputSampleRateHz: 16000,
+          outputSampleRateHz: 24000,
+        },
+      }),
+    );
+    await flushPendingPromises();
+    ws?.emitMessage(new Int16Array([1, 2, 3, 4]).buffer);
+
+    expect(workletInstances).toHaveLength(1);
+    expect(workletInstances[0]?.processorOptions).toMatchObject({
+      targetSampleRate: 16000,
+      frameDurationMs: 20,
+    });
+    expect(playbackSampleRates).toContain(24000);
+    expect(playbackSampleRates).not.toContain(16000);
+  });
+
+  it("falls back to legacy ready sampleRateHz for both capture and playback", async () => {
     installBrowserVoiceGlobals();
     const host = createHost({
       client: {
@@ -527,14 +613,18 @@ describe("handleVoiceConnect", () => {
         sessionKey: "voice:browser:1",
         provider: "openai-realtime",
         transport: {
-          sampleRateHz: 24000,
+          sampleRateHz: 22050,
         },
       }),
     );
+    await flushPendingPromises();
     ws?.emitMessage(new Int16Array([1, 2, 3, 4]).buffer);
 
-    expect(playbackSampleRates).toContain(24000);
-    expect(playbackSampleRates).not.toContain(16000);
+    expect(workletInstances[0]?.processorOptions).toMatchObject({
+      targetSampleRate: 22050,
+      frameDurationMs: 20,
+    });
+    expect(playbackSampleRates).toContain(22050);
   });
 
   it("coalesces overlapping history refreshes and clears finalized live turns after persistence", async () => {
@@ -563,6 +653,7 @@ describe("handleVoiceConnect", () => {
         },
       }),
     );
+    await flushPendingPromises();
 
     ws?.emitMessage(JSON.stringify({ type: "transcript", role: "user", text: "hello", final: true }));
     vi.advanceTimersByTime(181);
@@ -650,10 +741,25 @@ describe("handleVoiceConnect", () => {
     const host = createHost();
 
     await handleVoiceConnect(host as never);
+    const ws = wsInstances[0];
+    ws?.emitOpen();
+    ws?.emitMessage(
+      JSON.stringify({
+        type: "ready",
+        sessionKey: "voice:browser:1",
+        provider: "openai-realtime",
+        transport: {
+          sampleRateHz: 24000,
+        },
+      }),
+    );
+    await flushPendingPromises();
 
     expect(host.voiceError).toBe("Permission denied");
     expect(host.voiceConnecting).toBe(false);
-    expect(wsInstances).toHaveLength(0);
+    expect(host.voiceConnected).toBe(false);
+    expect(host.voiceHandle).toBeNull();
+    expect(ws?.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
   it("preserves timeout errors across normal websocket teardown", async () => {
@@ -670,6 +776,7 @@ describe("handleVoiceConnect", () => {
         provider: "openai-realtime",
       }),
     );
+    await flushPendingPromises();
 
     ws?.emitMessage(JSON.stringify({ type: "error", message: "voice session timeout" }));
     ws?.close(1000, "voice session timeout");
@@ -730,6 +837,7 @@ describe("voice debug logging", () => {
         provider: "openai-realtime",
       }),
     );
+    await flushPendingPromises();
     ws?.emitMessage(
       JSON.stringify({
         type: "transcript",
@@ -763,6 +871,7 @@ describe("voice debug logging", () => {
         provider: "openai-realtime",
       }),
     );
+    await flushPendingPromises();
 
     const pcm = Int16Array.from(new Array(320).fill(4096));
     workletInstances[0]?.emitVolume(0.02);
@@ -791,6 +900,7 @@ describe("voice debug logging", () => {
         provider: "openai-realtime",
       }),
     );
+    await flushPendingPromises();
     ws?.emitMessage(
       JSON.stringify({
         type: "transcript",
@@ -807,7 +917,4 @@ describe("voice debug logging", () => {
     expect(messages.some((message) => message.includes("voice transcript update payload"))).toBe(true);
   });
 });
-
-
-
 

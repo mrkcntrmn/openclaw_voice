@@ -300,6 +300,8 @@ const VoiceSessionTransportSchema = Type.Object(
   {
     wsPath: Type.String(),
     sampleRateHz: Type.Integer({ minimum: 1 }),
+    inputSampleRateHz: Type.Optional(Type.Integer({ minimum: 1 })),
+    outputSampleRateHz: Type.Optional(Type.Integer({ minimum: 1 })),
     channels: Type.Integer({ minimum: 1 }),
     frameDurationMs: Type.Integer({ minimum: 1 }),
   },

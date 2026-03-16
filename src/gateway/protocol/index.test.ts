@@ -5,6 +5,7 @@ import {
   validateTalkConfigResult,
   validateVoiceConfigResult,
   validateVoiceSessionCreateResult,
+  validateVoiceWsServerFrame,
 } from "./index.js";
 
 const makeError = (overrides: Partial<ErrorObject>): ErrorObject => ({
@@ -147,6 +148,8 @@ describe("voice protocol validators", () => {
         transport: {
           wsPath: "/voice/ws",
           sampleRateHz: 16_000,
+          inputSampleRateHz: 16_000,
+          outputSampleRateHz: 24_000,
           channels: 1,
           frameDurationMs: 20,
         },
@@ -157,6 +160,24 @@ describe("voice protocol validators", () => {
           transcriptSource: "provider",
           sharedChatHistory: true,
           sessionKeyPrefix: "voice",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts ready frames with split transport sample rates", () => {
+    expect(
+      validateVoiceWsServerFrame({
+        type: "ready",
+        sessionKey: "voice:browser:test",
+        provider: "openai-realtime",
+        modelId: "gpt-4o-realtime-preview",
+        transport: {
+          sampleRateHz: 24_000,
+          inputSampleRateHz: 16_000,
+          outputSampleRateHz: 24_000,
+          channels: 1,
+          frameDurationMs: 20,
         },
       }),
     ).toBe(true);

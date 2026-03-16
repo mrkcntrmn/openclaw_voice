@@ -41,6 +41,7 @@ import {
 const DEFAULT_OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview";
 const DEFAULT_GEMINI_LIVE_MODEL = "gemini-2.0-flash-exp";
 const DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+const VOICE_PROVIDER_TRANSPORT_READY_TIMEOUT_MS = 1_500;
 const DEBUG_OPENAI_FORCE_COMMIT_IDLE_MS = 1_500;
 const DEBUG_OPENAI_FORCE_COMMIT_QUIET_FRAME_COUNT = 60;
 const DEBUG_OPENAI_FORCE_COMMIT_RMS_THRESHOLD = 0.01;
@@ -546,6 +547,10 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
   private currentTurnQuietFrames = 0;
   private currentTurnFallbackIssued = false;
   private forceCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  private providerSessionAcknowledged = false;
+  private transportReadyResolve: (() => void) | null = null;
+  private transportReadyReject: ((error: Error) => void) | null = null;
+  private transportReadyTimer: ReturnType<typeof setTimeout> | null = null;
 
   async connect(options: VoiceAdapterConnectOptions): Promise<void> {
     const apiKey = normalizeNonEmptyString(options.provider.apiKey);
@@ -574,6 +579,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     this.currentTurnResponseCreated = false;
     this.currentTurnQuietFrames = 0;
     this.currentTurnFallbackIssued = false;
+    this.providerSessionAcknowledged = false;
     this.clearForceCommitTimer();
 
     const websocketUrl =
@@ -612,9 +618,15 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       this.handleEvent(event);
     });
     this.ws.on("close", () => {
+      this.rejectTransportReady(new Error("openai realtime websocket closed before transport was ready"));
       this.emit("state", { state: "closed" } satisfies VoiceStateEvent);
     });
     this.ws.on("error", (cause) => {
+      this.rejectTransportReady(
+        cause instanceof Error
+          ? cause
+          : new Error("openai realtime websocket error"),
+      );
       this.emit("error", {
         message: "openai realtime websocket error",
         cause,
@@ -671,8 +683,12 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       toolCount: options.tools.length,
       historyCount: options.history.length,
     });
+    const transportReady = this.waitForTransportReady();
     this.sendJson(sessionUpdate);
-    this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
+    await transportReady;
+    if (!this.providerSessionAcknowledged) {
+      this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
+    }
   }
 
   sendAudio(audio: Buffer): void {
@@ -729,6 +745,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
   close(): void {
     debugVoice("voice provider close", { providerId: this.providerId });
     this.clearForceCommitTimer();
+    this.rejectTransportReady(new Error("openai realtime websocket closed"));
     this.ws?.close();
     this.ws = null;
   }
@@ -831,6 +848,65 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       providerId: this.providerId,
       eventType,
     });
+  }
+
+  private clearTransportReadyWaiter(): void {
+    if (this.transportReadyTimer !== null) {
+      clearTimeout(this.transportReadyTimer);
+      this.transportReadyTimer = null;
+    }
+    this.transportReadyResolve = null;
+    this.transportReadyReject = null;
+  }
+
+  private waitForTransportReady(): Promise<void> {
+    this.clearTransportReadyWaiter();
+    return new Promise<void>((resolve, reject) => {
+      this.transportReadyResolve = resolve;
+      this.transportReadyReject = reject;
+      this.transportReadyTimer = setTimeout(() => {
+        const pendingResolve = this.transportReadyResolve;
+        if (!pendingResolve) {
+          return;
+        }
+        this.clearTransportReadyWaiter();
+        debugVoice("voice provider transport", {
+          providerId: this.providerId,
+          modelId: this.modelId,
+          state: "timeout-fallback",
+          timeoutMs: VOICE_PROVIDER_TRANSPORT_READY_TIMEOUT_MS,
+          inputSampleRateHz: this.inputSampleRateHz,
+          outputSampleRateHz: this.outputSampleRateHz,
+        });
+        pendingResolve();
+      }, VOICE_PROVIDER_TRANSPORT_READY_TIMEOUT_MS);
+      this.transportReadyTimer.unref?.();
+    });
+  }
+
+  private resolveTransportReady(): void {
+    const pendingResolve = this.transportReadyResolve;
+    if (!pendingResolve) {
+      return;
+    }
+    this.clearTransportReadyWaiter();
+    debugVoice("voice provider transport", {
+      providerId: this.providerId,
+      modelId: this.modelId,
+      state: "acknowledged",
+      inputSampleRateHz: this.inputSampleRateHz,
+      outputSampleRateHz: this.outputSampleRateHz,
+    });
+    pendingResolve();
+  }
+
+  private rejectTransportReady(error: Error): void {
+    const pendingReject = this.transportReadyReject;
+    if (!pendingReject) {
+      return;
+    }
+    this.clearTransportReadyWaiter();
+    pendingReject(error);
   }
 
   private applyEffectiveSessionTransport(session: Record<string, unknown> | null): void {
@@ -955,7 +1031,9 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     switch (type) {
       case "session.created": {
         const session = isRecord(event.session) ? event.session : null;
+        this.providerSessionAcknowledged = true;
         this.applyEffectiveSessionTransport(session);
+        this.resolveTransportReady();
         this.logSessionDiagnostics(type, session);
         this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
         this.maybeWarnIfProviderStalled();
@@ -963,7 +1041,9 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       }
       case "session.updated": {
         const session = isRecord(event.session) ? event.session : null;
+        this.providerSessionAcknowledged = true;
         this.applyEffectiveSessionTransport(session);
+        this.resolveTransportReady();
         this.logSessionDiagnostics(type, session);
         this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
         this.maybeWarnIfProviderStalled();
@@ -1143,6 +1223,12 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
         return;
       }
       case "error":
+        this.rejectTransportReady(
+          new Error(
+            normalizeNonEmptyString((event.error as { message?: unknown } | undefined)?.message) ??
+              "openai realtime error",
+          ),
+        );
         this.emit("error", {
           message:
             normalizeNonEmptyString((event.error as { message?: unknown } | undefined)?.message) ??
@@ -1174,6 +1260,12 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
 }
 class GeminiLiveVoiceAdapter extends VoiceAdapter {
   private ws: WebSocket | null = null;
+  private inputSampleRateHz = defaultVoiceSampleRateHzForProvider("gemini-live");
+  private outputSampleRateHz = defaultVoiceSampleRateHzForProvider("gemini-live");
+  private setupAcknowledged = false;
+  private transportReadyResolve: (() => void) | null = null;
+  private transportReadyReject: ((error: Error) => void) | null = null;
+  private transportReadyTimer: ReturnType<typeof setTimeout> | null = null;
 
   async connect(options: VoiceAdapterConnectOptions): Promise<void> {
     const apiKey = normalizeNonEmptyString(options.provider.apiKey);
@@ -1187,6 +1279,9 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
       `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
     const connectStartedAt = Date.now();
+    this.inputSampleRateHz = options.sampleRateHz;
+    this.outputSampleRateHz = options.sampleRateHz;
+    this.setupAcknowledged = false;
     debugVoice("voice provider connect start", {
       providerId: options.providerId,
       modelId: options.modelId,
@@ -1214,9 +1309,13 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
       this.handleEvent(event);
     });
     this.ws.on("close", () => {
+      this.rejectTransportReady(new Error("gemini live websocket closed before transport was ready"));
       this.emit("state", { state: "closed" } satisfies VoiceStateEvent);
     });
     this.ws.on("error", (cause) => {
+      this.rejectTransportReady(
+        cause instanceof Error ? cause : new Error("gemini live websocket error"),
+      );
       this.emit("error", {
         message: "gemini live websocket error",
         cause,
@@ -1249,11 +1348,16 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
     debugVoice("voice provider bootstrap", {
       providerId: options.providerId,
       modelId: options.modelId,
+      sampleRateHz: options.sampleRateHz,
       toolCount: options.tools.length,
       historyCount: options.history.length,
     });
+    const transportReady = this.waitForTransportReady(options.providerId, options.modelId);
     this.sendJson({ setup });
-    this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
+    await transportReady;
+    if (!this.setupAcknowledged) {
+      this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
+    }
   }
 
   sendAudio(audio: Buffer): void {
@@ -1266,7 +1370,7 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
       realtimeInput: {
         mediaChunks: [
           {
-            mimeType: "audio/pcm;rate=16000",
+            mimeType: `audio/pcm;rate=${this.inputSampleRateHz}`,
             data: audio.toString("base64"),
           },
         ],
@@ -1317,8 +1421,75 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
 
   close(): void {
     debugVoice("voice provider close", { providerId: "gemini-live" });
+    this.rejectTransportReady(new Error("gemini live websocket closed"));
     this.ws?.close();
     this.ws = null;
+  }
+
+  override getTransportConfig(): VoiceTransportConfig {
+    return {
+      inputSampleRateHz: this.inputSampleRateHz,
+      outputSampleRateHz: this.outputSampleRateHz,
+      sampleRateHz: this.outputSampleRateHz,
+    };
+  }
+
+  private clearTransportReadyWaiter(): void {
+    if (this.transportReadyTimer !== null) {
+      clearTimeout(this.transportReadyTimer);
+      this.transportReadyTimer = null;
+    }
+    this.transportReadyResolve = null;
+    this.transportReadyReject = null;
+  }
+
+  private waitForTransportReady(providerId: string, modelId: string): Promise<void> {
+    this.clearTransportReadyWaiter();
+    return new Promise<void>((resolve, reject) => {
+      this.transportReadyResolve = resolve;
+      this.transportReadyReject = reject;
+      this.transportReadyTimer = setTimeout(() => {
+        const pendingResolve = this.transportReadyResolve;
+        if (!pendingResolve) {
+          return;
+        }
+        this.clearTransportReadyWaiter();
+        debugVoice("voice provider transport", {
+          providerId,
+          modelId,
+          state: "timeout-fallback",
+          timeoutMs: VOICE_PROVIDER_TRANSPORT_READY_TIMEOUT_MS,
+          inputSampleRateHz: this.inputSampleRateHz,
+          outputSampleRateHz: this.outputSampleRateHz,
+        });
+        pendingResolve();
+      }, VOICE_PROVIDER_TRANSPORT_READY_TIMEOUT_MS);
+      this.transportReadyTimer.unref?.();
+    });
+  }
+
+  private resolveTransportReady(): void {
+    const pendingResolve = this.transportReadyResolve;
+    if (!pendingResolve) {
+      return;
+    }
+    this.clearTransportReadyWaiter();
+    debugVoice("voice provider transport", {
+      providerId: "gemini-live",
+      state: "acknowledged",
+      inputSampleRateHz: this.inputSampleRateHz,
+      outputSampleRateHz: this.outputSampleRateHz,
+    });
+    pendingResolve();
+  }
+
+  private rejectTransportReady(error: Error): void {
+    const pendingReject = this.transportReadyReject;
+    if (!pendingReject) {
+      return;
+    }
+    this.clearTransportReadyWaiter();
+    pendingReject(error);
   }
 
   private handleEvent(event: Record<string, unknown>): void {
@@ -1331,6 +1502,8 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
     });
 
     if ("setupComplete" in event) {
+      this.setupAcknowledged = true;
+      this.resolveTransportReady();
       this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
     }
 
@@ -1415,6 +1588,9 @@ class GeminiLiveVoiceAdapter extends VoiceAdapter {
     }
 
     if (isRecord(event.error)) {
+      this.rejectTransportReady(
+        new Error(normalizeNonEmptyString(event.error.message) ?? "gemini live error"),
+      );
       this.emit("error", {
         message: normalizeNonEmptyString(event.error.message) ?? "gemini live error",
         cause: event.error,

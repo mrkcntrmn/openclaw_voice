@@ -161,6 +161,62 @@ function createLiveConnectOptions(providerId: string, apiKey: string, tools: unk
   };
 }
 
+async function flushMicrotasks(iterations = 4): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function createOpenAISessionAck(sampleRateHz: number) {
+  return {
+    output_modalities: ["audio"],
+    audio: {
+      input: {
+        format: { type: "audio/pcm", rate: sampleRateHz },
+        transcription: { model: "gpt-4o-mini-transcribe" },
+        turn_detection: { type: "server_vad" },
+      },
+      output: {
+        format: { type: "audio/pcm", rate: sampleRateHz },
+      },
+    },
+  };
+}
+
+async function connectOpenAIAdapter(
+  adapter: VoiceAdapter,
+  options: ReturnType<typeof createLiveConnectOptions>,
+  session = createOpenAISessionAck(options.sampleRateHz),
+) {
+  const connectPromise = adapter.connect(options);
+  await flushMicrotasks();
+  const ws = wsMockState.instances.at(-1);
+  if (!ws) {
+    throw new Error("expected OpenAI realtime websocket instance");
+  }
+  ws.emitJson({
+    type: "session.created",
+    session,
+  });
+  await connectPromise;
+  return ws;
+}
+
+async function connectGeminiAdapter(
+  adapter: VoiceAdapter,
+  options: ReturnType<typeof createLiveConnectOptions>,
+) {
+  const connectPromise = adapter.connect(options);
+  await flushMicrotasks();
+  const ws = wsMockState.instances.at(-1);
+  if (!ws) {
+    throw new Error("expected Gemini live websocket instance");
+  }
+  ws.emitJson({ setupComplete: true });
+  await connectPromise;
+  return ws;
+}
+
 const envKeys = ["OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "VOICE_TEST_API_KEY"];
 const envSnapshot = new Map<string, string | undefined>();
 
@@ -316,7 +372,8 @@ describe("voice adapters", () => {
     adapter.on("audio", (chunk) => audio.push(chunk));
     adapter.on("error", (event) => errors.push(event.message));
 
-    await adapter.connect(
+    const ws = await connectOpenAIAdapter(
+      adapter,
       createLiveConnectOptions("openai-realtime", "sk-openai", [
         {
           name: "lookup",
@@ -330,7 +387,6 @@ describe("voice adapters", () => {
         },
       ]),
     );
-    const ws = wsMockState.instances[0];
     expect(ws?.url).toContain("api.openai.com");
     expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
       type: "session.update",
@@ -369,22 +425,6 @@ describe("voice adapters", () => {
       },
     });
 
-    ws?.emitJson({
-      type: "session.created",
-      session: {
-        output_modalities: ["audio"],
-        audio: {
-          input: {
-            format: { type: "audio/pcm", rate: 24_000 },
-            transcription: { model: "gpt-4o-mini-transcribe" },
-            turn_detection: { type: "server_vad" },
-          },
-          output: {
-            format: { type: "audio/pcm", rate: 24_000 },
-          },
-        },
-      },
-    });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: "Good" });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: " morning" });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.completed", transcript: "good morning" });
@@ -425,6 +465,48 @@ describe("voice adapters", () => {
     expect(ws?.sent.some((payload) => String(payload).includes("function_call_output"))).toBe(true);
   });
 
+  it("waits for the OpenAI transport ack before connect resolves and updates transport config", async () => {
+    const adapter = createVoiceAdapter("openai-realtime");
+    const connectPromise = adapter.connect(createLiveConnectOptions("openai-realtime", "sk-openai"));
+    let connected = false;
+    void connectPromise.then(() => {
+      connected = true;
+    });
+
+    await flushMicrotasks();
+    const ws = wsMockState.instances[0];
+    if (!ws) {
+      throw new Error("expected OpenAI realtime websocket instance");
+    }
+
+    expect(connected).toBe(false);
+
+    ws.emitJson({
+      type: "session.updated",
+      session: {
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 16_000 },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad" },
+          },
+          output: {
+            format: { type: "audio/pcm", rate: 24_000 },
+          },
+        },
+      },
+    });
+
+    await connectPromise;
+
+    expect(adapter.getTransportConfig()).toEqual({
+      inputSampleRateHz: 16_000,
+      outputSampleRateHz: 24_000,
+      sampleRateHz: 24_000,
+    });
+  });
+
   it("translates Gemini live events and outbound tool results", async () => {
     const adapter = createVoiceAdapter("gemini-live");
     const states: string[] = [];
@@ -439,16 +521,15 @@ describe("voice adapters", () => {
     adapter.on("audio", (chunk) => audio.push(chunk));
     adapter.on("error", (event) => errors.push(event.message));
 
-    await adapter.connect(createLiveConnectOptions("gemini-live", "sk-gemini"));
-
-    const ws = wsMockState.instances[0];
+    const ws = await connectGeminiAdapter(
+      adapter,
+      createLiveConnectOptions("gemini-live", "sk-gemini"),
+    );
     expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
       setup: {
         model: "models/gemini-2.0-flash-exp",
       },
     });
-
-    ws?.emitJson({ setupComplete: true });
     ws?.emitJson({
       serverContent: {
         inputTranscription: { text: "hello" },
@@ -653,4 +734,3 @@ describe("VoiceSessionOrchestrator", () => {
     );
   });
 });
-

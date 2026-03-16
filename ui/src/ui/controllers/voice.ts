@@ -37,6 +37,8 @@ type VoiceSessionBootstrapResponse = {
   transport?: {
     wsPath?: string;
     sampleRateHz?: number;
+    inputSampleRateHz?: number;
+    outputSampleRateHz?: number;
     channels?: number;
     frameDurationMs?: number;
   };
@@ -80,6 +82,8 @@ type VoiceServerControlFrame =
       modelId?: string;
       transport?: {
         sampleRateHz?: number;
+        inputSampleRateHz?: number;
+        outputSampleRateHz?: number;
         channels?: number;
         frameDurationMs?: number;
       };
@@ -156,6 +160,52 @@ function normalizeTranscriptText(value: unknown, final = false): string | null {
     return normalizeString(value);
   }
   return value.length > 0 ? value : null;
+}
+
+type VoiceTransportDescriptor = {
+  sampleRateHz: number;
+  inputSampleRateHz: number;
+  outputSampleRateHz: number;
+  channels: number;
+  frameDurationMs: number;
+};
+
+function resolveVoiceTransportDescriptor(
+  transport:
+    | {
+        sampleRateHz?: number;
+        inputSampleRateHz?: number;
+        outputSampleRateHz?: number;
+        channels?: number;
+        frameDurationMs?: number;
+      }
+    | undefined,
+  fallbackSampleRateHz: number,
+  fallbackFrameDurationMs: number,
+): VoiceTransportDescriptor {
+  const outputSampleRateHz =
+    typeof transport?.outputSampleRateHz === "number"
+      ? transport.outputSampleRateHz
+      : typeof transport?.sampleRateHz === "number"
+        ? transport.sampleRateHz
+        : fallbackSampleRateHz;
+  const inputSampleRateHz =
+    typeof transport?.inputSampleRateHz === "number"
+      ? transport.inputSampleRateHz
+      : typeof transport?.sampleRateHz === "number"
+        ? transport.sampleRateHz
+        : fallbackSampleRateHz;
+
+  return {
+    sampleRateHz: outputSampleRateHz,
+    inputSampleRateHz,
+    outputSampleRateHz,
+    channels: typeof transport?.channels === "number" ? transport.channels : 1,
+    frameDurationMs:
+      typeof transport?.frameDurationMs === "number"
+        ? transport.frameDurationMs
+        : fallbackFrameDurationMs,
+  };
 }
 
 function resolveVoiceSupport(): boolean {
@@ -863,6 +913,7 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
   const displayState = getVoiceDisplayState(host);
   const pendingFrameStats: Array<Pcm16AudioMetrics & { sequence: number }> = [];
   let outboundAudioFrames = 0;
+  let captureStarting = false;
 
   const clearTranscriptWarning = () => {
     if (transcriptWarningTimer !== null) {
@@ -905,6 +956,148 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
       frameCount: totalCaptureFrames,
       quietFrameRatio: roundVoiceAudioMetric(quietCaptureFrames / totalCaptureFrames),
     });
+  };
+
+  const startCapture = async (params: {
+    sampleRateHz: number;
+    frameDurationMs: number;
+    sessionKey: string;
+    providerId: string;
+  }) => {
+    if (capture || captureStarting || closing) {
+      return;
+    }
+
+    captureStarting = true;
+    host.voiceStatus = "Requesting microphone";
+    debugVoice("voice microphone permission", {
+      sessionKey: params.sessionKey,
+      providerId: params.providerId,
+      state: "request",
+    });
+
+    const nextCapture = new AudioCapture({
+      sampleRateHz: params.sampleRateHz,
+      frameDurationMs: params.frameDurationMs,
+      onAudioData: (data) => {
+        const frameStats = pendingFrameStats.shift();
+        if (streamAudioEnabled && ws && ws.readyState === WebSocket.OPEN) {
+          outboundAudioFrames += 1;
+          if (frameStats) {
+            debugVoice("voice capture audio frame", {
+              sessionKey: host.voiceSessionKey ?? params.sessionKey,
+              providerId: host.voiceProvider ?? params.providerId,
+              audioSequence: outboundAudioFrames,
+              sampleCount: frameStats.sampleCount,
+              byteLength: frameStats.byteLength,
+              rms: roundVoiceAudioMetric(frameStats.rms),
+              peak: roundVoiceAudioMetric(frameStats.peak),
+              nonZeroRatio: roundVoiceAudioMetric(frameStats.nonZeroRatio),
+              clippedRatio: roundVoiceAudioMetric(frameStats.clippedRatio),
+              durationMs: roundVoiceAudioMetric(frameStats.durationMs),
+            });
+          }
+          ws.send(data);
+        }
+      },
+      onVolumeChange: (volume) => {
+        if (closing) {
+          return;
+        }
+        displayState.pendingVolume = volume;
+        scheduleVoiceDisplayFlush(host, displayState, "volume");
+        if (volume >= VOICE_AUDIO_ACTIVITY_VOLUME_THRESHOLD) {
+          sawMeaningfulVolume = true;
+        }
+        const now = Date.now();
+        if (now - lastVolumeDebugAt >= 250) {
+          lastVolumeDebugAt = now;
+          debugVoice("voice capture", {
+            sessionKey: host.voiceSessionKey ?? params.sessionKey,
+            providerId: host.voiceProvider ?? params.providerId,
+            state: "volume",
+            volume,
+          });
+        }
+      },
+      onAudioFrameStats: (stats) => {
+        pendingFrameStats.push(stats);
+        totalCaptureFrames += 1;
+        if (
+          stats.rms < VOICE_AUDIO_SILENCE_RMS_THRESHOLD ||
+          stats.nonZeroRatio < 0.1
+        ) {
+          quietCaptureFrames += 1;
+        }
+        const now = Date.now();
+        if (
+          stats.sequence === 1 ||
+          now - lastAudioMetricsDebugAt >= VOICE_AUDIO_DEBUG_LOG_INTERVAL_MS
+        ) {
+          lastAudioMetricsDebugAt = now;
+          debugVoice("voice capture stats", {
+            sessionKey: host.voiceSessionKey ?? params.sessionKey,
+            providerId: host.voiceProvider ?? params.providerId,
+            audioSequence: stats.sequence,
+            sampleCount: stats.sampleCount,
+            byteLength: stats.byteLength,
+            rms: roundVoiceAudioMetric(stats.rms),
+            peak: roundVoiceAudioMetric(stats.peak),
+            nonZeroRatio: roundVoiceAudioMetric(stats.nonZeroRatio),
+            clippedRatio: roundVoiceAudioMetric(stats.clippedRatio),
+            durationMs: roundVoiceAudioMetric(stats.durationMs),
+          });
+        }
+        maybeLogCaptureSilenceWarning();
+      },
+    });
+    capture = nextCapture;
+
+    try {
+      await nextCapture.start();
+      if (closing) {
+        await nextCapture.stop();
+        if (capture === nextCapture) {
+          capture = null;
+        }
+        return;
+      }
+
+      debugVoice("voice microphone permission", {
+        sessionKey: params.sessionKey,
+        providerId: params.providerId,
+        state: "granted",
+      });
+      debugVoice("voice capture", {
+        sessionKey: params.sessionKey,
+        providerId: params.providerId,
+        state: "started",
+        sampleRateHz: params.sampleRateHz,
+        frameDurationMs: params.frameDurationMs,
+      });
+      debugVoice("voice capture summary", {
+        sessionKey: params.sessionKey,
+        providerId: params.providerId,
+        sampleRateHz: params.sampleRateHz,
+        frameDurationMs: params.frameDurationMs,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      });
+      streamAudioEnabled = true;
+      if (host.voiceStatus === "Requesting microphone") {
+        host.voiceStatus = "Listening";
+      }
+      scheduleTranscriptWarning();
+    } catch (error) {
+      if (capture === nextCapture) {
+        capture = null;
+      }
+      throw error;
+    } finally {
+      captureStarting = false;
+    }
   };
 
   const teardown = async (params?: { preserveError?: boolean; skipSocketClose?: boolean }) => {
@@ -965,122 +1158,13 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
     }
 
     const wsPath = normalizeString(bootstrap.transport?.wsPath) ?? DEFAULT_VOICE_WS_PATH;
-    const sampleRateHz =
-      typeof bootstrap.transport?.sampleRateHz === "number"
-        ? bootstrap.transport.sampleRateHz
-        : DEFAULT_SAMPLE_RATE_HZ;
-    const frameDurationMs =
-      typeof bootstrap.transport?.frameDurationMs === "number"
-        ? bootstrap.transport.frameDurationMs
-        : DEFAULT_FRAME_DURATION_MS;
+    const bootstrapTransport = resolveVoiceTransportDescriptor(
+      bootstrap.transport,
+      DEFAULT_SAMPLE_RATE_HZ,
+      DEFAULT_FRAME_DURATION_MS,
+    );
     const providerId = normalizeString(bootstrap.provider) ?? "voice";
     const bootstrapSessionKey = normalizeString(bootstrap.sessionKey) ?? host.sessionKey;
-
-    host.voiceStatus = "Requesting microphone";
-    debugVoice("voice microphone permission", {
-      sessionKey: bootstrapSessionKey,
-      providerId,
-      state: "request",
-    });
-
-    capture = new AudioCapture({
-      sampleRateHz,
-      frameDurationMs,
-      onAudioData: (data) => {
-        const frameStats = pendingFrameStats.shift();
-        if (streamAudioEnabled && ws && ws.readyState === WebSocket.OPEN) {
-          outboundAudioFrames += 1;
-          if (frameStats) {
-            debugVoice("voice capture audio frame", {
-              sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
-              providerId: host.voiceProvider ?? providerId,
-              audioSequence: outboundAudioFrames,
-              sampleCount: frameStats.sampleCount,
-              byteLength: frameStats.byteLength,
-              rms: roundVoiceAudioMetric(frameStats.rms),
-              peak: roundVoiceAudioMetric(frameStats.peak),
-              nonZeroRatio: roundVoiceAudioMetric(frameStats.nonZeroRatio),
-              clippedRatio: roundVoiceAudioMetric(frameStats.clippedRatio),
-              durationMs: roundVoiceAudioMetric(frameStats.durationMs),
-            });
-          }
-          ws.send(data);
-        }
-      },
-      onVolumeChange: (volume) => {
-        if (closing) {
-          return;
-        }
-        displayState.pendingVolume = volume;
-        scheduleVoiceDisplayFlush(host, displayState, "volume");
-        if (volume >= VOICE_AUDIO_ACTIVITY_VOLUME_THRESHOLD) {
-          sawMeaningfulVolume = true;
-        }
-        const now = Date.now();
-        if (now - lastVolumeDebugAt >= 250) {
-          lastVolumeDebugAt = now;
-          debugVoice("voice capture", {
-            sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
-            providerId: host.voiceProvider ?? providerId,
-            state: "volume",
-            volume,
-          });
-        }
-      },
-      onAudioFrameStats: (stats) => {
-        pendingFrameStats.push(stats);
-        totalCaptureFrames += 1;
-        if (
-          stats.rms < VOICE_AUDIO_SILENCE_RMS_THRESHOLD ||
-          stats.nonZeroRatio < 0.1
-        ) {
-          quietCaptureFrames += 1;
-        }
-        const now = Date.now();
-        if (
-          stats.sequence === 1 ||
-          now - lastAudioMetricsDebugAt >= VOICE_AUDIO_DEBUG_LOG_INTERVAL_MS
-        ) {
-          lastAudioMetricsDebugAt = now;
-          debugVoice("voice capture stats", {
-            sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
-            providerId: host.voiceProvider ?? providerId,
-            audioSequence: stats.sequence,
-            sampleCount: stats.sampleCount,
-            byteLength: stats.byteLength,
-            rms: roundVoiceAudioMetric(stats.rms),
-            peak: roundVoiceAudioMetric(stats.peak),
-            nonZeroRatio: roundVoiceAudioMetric(stats.nonZeroRatio),
-            clippedRatio: roundVoiceAudioMetric(stats.clippedRatio),
-            durationMs: roundVoiceAudioMetric(stats.durationMs),
-          });
-        }
-        maybeLogCaptureSilenceWarning();
-      },
-    });
-    await capture.start();
-    debugVoice("voice microphone permission", {
-      sessionKey: bootstrapSessionKey,
-      providerId,
-      state: "granted",
-    });
-    debugVoice("voice capture", {
-      sessionKey: bootstrapSessionKey,
-      providerId,
-      state: "started",
-      sampleRateHz,
-      frameDurationMs,
-    });
-    debugVoice("voice capture summary", {
-      sessionKey: bootstrapSessionKey,
-      providerId,
-      sampleRateHz,
-      frameDurationMs,
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    });
 
     ws = new WebSocket(buildVoiceWebSocketUrl(host.settings.gatewayUrl, wsPath));
     ws.binaryType = "arraybuffer";
@@ -1088,8 +1172,9 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
       sessionKey: bootstrapSessionKey,
       providerId,
       wsPath,
-      sampleRateHz,
-      frameDurationMs,
+      inputSampleRateHz: bootstrapTransport.inputSampleRateHz,
+      outputSampleRateHz: bootstrapTransport.outputSampleRateHz,
+      frameDurationMs: bootstrapTransport.frameDurationMs,
     });
 
     const voiceHandle: VoiceSessionHandle = {
@@ -1164,20 +1249,20 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
         });
         switch (parsed.type) {
           case "ready": {
-            const readySampleRateHz =
-              typeof parsed.transport?.sampleRateHz === "number"
-                ? parsed.transport.sampleRateHz
-                : sampleRateHz;
+            const readyTransport = resolveVoiceTransportDescriptor(
+              parsed.transport,
+              bootstrapTransport.sampleRateHz,
+              bootstrapTransport.frameDurationMs,
+            );
             host.voiceConnecting = false;
             host.voiceConnected = true;
             host.voiceProvider = normalizeString(parsed.provider) ?? providerId;
             host.voiceSessionKey = normalizeString(parsed.sessionKey) ?? bootstrapSessionKey;
-            host.voiceStatus = "Listening";
-            streamAudioEnabled = true;
+            host.voiceStatus = "Requesting microphone";
             if (playback) {
               playback.stop();
             }
-            playback = new AudioPlayback(readySampleRateHz, {
+            playback = new AudioPlayback(readyTransport.outputSampleRateHz, {
               onDebug: (message, meta) => {
                 debugVoice(message, {
                   sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
@@ -1187,18 +1272,37 @@ export async function handleVoiceConnect(host: VoiceHost): Promise<void> {
               },
             });
             playback.start();
-            scheduleTranscriptWarning();
+            void startCapture({
+              sampleRateHz: readyTransport.inputSampleRateHz,
+              frameDurationMs: readyTransport.frameDurationMs,
+              sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
+              providerId: host.voiceProvider ?? providerId,
+            }).catch(async (error) => {
+              if (closing) {
+                return;
+              }
+              const message = error instanceof Error ? error.message : String(error);
+              host.voiceError = message;
+              debugVoice("voice microphone permission", {
+                sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
+                providerId: host.voiceProvider ?? providerId,
+                state: "error",
+                error: message,
+              });
+              await teardown({ preserveError: true });
+            });
             debugVoice("voice control frame", {
               frameType: "ready",
               sessionKey: host.voiceSessionKey,
               providerId: host.voiceProvider,
-              sampleRateHz: readySampleRateHz,
+              inputSampleRateHz: readyTransport.inputSampleRateHz,
+              outputSampleRateHz: readyTransport.outputSampleRateHz,
             });
             debugVoice("voice playback event", {
               sessionKey: host.voiceSessionKey ?? bootstrapSessionKey,
               providerId: host.voiceProvider ?? providerId,
               state: "started",
-              sampleRateHz: readySampleRateHz,
+              sampleRateHz: readyTransport.outputSampleRateHz,
             });
             return;
           }

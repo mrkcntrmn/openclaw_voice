@@ -81,6 +81,8 @@ export const VoiceWsReadyFrameSchema = Type.Object(
       Type.Object(
         {
           sampleRateHz: Type.Optional(Type.Integer()),
+          inputSampleRateHz: Type.Optional(Type.Integer()),
+          outputSampleRateHz: Type.Optional(Type.Integer()),
           channels: Type.Optional(Type.Integer()),
           frameDurationMs: Type.Optional(Type.Integer()),
         },
