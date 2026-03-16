@@ -680,6 +680,23 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     const transportReady = this.waitForTransportReady();
     this.sendJson(sessionUpdate);
     await transportReady;
+
+    for (const turn of options.history) {
+      if (!turn.text.trim()) continue;
+      this.sendJson({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: turn.role,
+          content: [
+            {
+              type: turn.role === "user" ? "input_text" : "text",
+              text: turn.text,
+            },
+          ],
+        },
+      });
+    }
     if (!this.providerSessionAcknowledged) {
       this.emit("state", { state: "connected" } satisfies VoiceStateEvent);
     }
@@ -1882,10 +1899,14 @@ export async function createVoiceSessionRuntime(params: {
     pauseOnToolCall: resolved.session.pauseOnToolCall,
     interruptOnSpeech: resolved.session.interruptOnSpeech,
   });
-  const instructions = buildVoiceInstructions({
-    history,
-    instructions: params.instructions?.trim() || DEFAULT_GATEWAY_VOICE_INSTRUCTIONS,
-  });
+  const baseInstructions = params.instructions?.trim() || DEFAULT_GATEWAY_VOICE_INSTRUCTIONS;
+  const isOpenAI = resolved.providerId === "openai-realtime" || resolved.providerId.includes("openai");
+  const instructions = isOpenAI
+    ? baseInstructions
+    : buildVoiceInstructions({
+        history,
+        instructions: baseInstructions,
+      });
 
   return {
     resolved,
