@@ -391,24 +391,10 @@ describe("voice adapters", () => {
     expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
       type: "session.update",
       session: {
-        type: "realtime",
-        output_modalities: ["audio"],
-        audio: {
-          input: {
-            format: {
-              type: "audio/pcm",
-              rate: 24_000,
-            },
-            transcription: { model: "gpt-4o-mini-transcribe" },
-            turn_detection: { type: "server_vad" },
-          },
-          output: {
-            format: {
-              type: "audio/pcm",
-              rate: 24_000,
-            },
-          },
-        },
+        input_audio_format: "pcm16",
+        output_audio_format: "pcm16",
+        turn_detection: { type: "server_vad" },
+        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
         tools: [
           {
             type: "function",

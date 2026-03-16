@@ -635,46 +635,31 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
 
     const inputAudioFormatType = normalizeNonEmptyString(options.provider.inputAudioFormat);
     const outputAudioFormatType = normalizeNonEmptyString(options.provider.outputAudioFormat);
-    const inputFormat = {
-      type: inputAudioFormatType === "pcm16" || !inputAudioFormatType ? "audio/pcm" : inputAudioFormatType,
-      rate: options.sampleRateHz,
-    };
-    const outputFormat = {
-      type:
-        outputAudioFormatType === "pcm16" || !outputAudioFormatType
-          ? "audio/pcm"
-          : outputAudioFormatType,
-      rate: options.sampleRateHz,
-    };
+    const inputFormat = inputAudioFormatType === "audio/pcm" || !inputAudioFormatType ? "pcm16" : inputAudioFormatType;
+    const outputFormat = outputAudioFormatType === "audio/pcm" || !outputAudioFormatType ? "pcm16" : outputAudioFormatType;
+
     const sessionUpdate: Record<string, unknown> = {
       type: "session.update",
       session: {
-        type: "realtime",
         instructions: options.instructions,
-        output_modalities: ["audio"],
-        audio: {
-          input: {
-            format: inputFormat,
-            turn_detection: {
-              type: "server_vad",
-            },
-          },
-          output: {
-            format: outputFormat,
-          },
+        modalities: ["text", "audio"],
+        input_audio_format: inputFormat,
+        output_audio_format: outputFormat,
+        turn_detection: {
+          type: "server_vad",
         },
         tools: toOpenAIRealtimeTools(options.tools),
         tool_choice: "auto",
       },
     };
+
     const transcriptionModelId =
       normalizeNonEmptyString(options.provider.transcriptionModelId) ??
       defaultTranscriptionModelIdForProvider(options.providerId);
+
     if (transcriptionModelId) {
       const session = sessionUpdate.session as Record<string, unknown>;
-      const audio = session.audio as Record<string, unknown>;
-      const input = audio.input as Record<string, unknown>;
-      input.transcription = { model: transcriptionModelId };
+      session.input_audio_transcription = { model: transcriptionModelId };
     }
     debugVoice("voice provider bootstrap", {
       providerId: options.providerId,
