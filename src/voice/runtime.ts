@@ -410,8 +410,17 @@ function resolveRealtimeAudioFormat(
   if (!legacyFormat) {
     return null;
   }
+  
+  let implicitSampleRateHz: number | undefined;
+  if (legacyFormat === "pcm16") {
+    implicitSampleRateHz = 24000;
+  } else if (legacyFormat === "g711_ulaw" || legacyFormat === "g711_alaw") {
+    implicitSampleRateHz = 8000;
+  }
+
   return {
     type: legacyFormat,
+    sampleRateHz: implicitSampleRateHz,
   };
 }
 
