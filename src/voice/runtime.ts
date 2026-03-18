@@ -7,7 +7,6 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
 } from "../agents/agent-scope.js";
-import { convertTools } from "../agents/openai-ws-stream.js";
 import { toToolDefinitions } from "../agents/pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "../agents/pi-tools.js";
 import { cleanToolSchemaForGemini } from "../agents/pi-tools.schema.js";
@@ -746,7 +745,9 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     await transportReady;
 
     for (const turn of options.history) {
-      if (!turn.text.trim()) continue;
+      if (!turn.text.trim()) {
+        continue;
+      }
       this.sendJson({
         type: "conversation.item.create",
         item: {
@@ -754,7 +755,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
           role: turn.role,
           content: [
             {
-              type: turn.role === "user" ? "input_text" : "text",
+              type: turn.role === "user" ? "input_text" : "output_text",
               text: turn.text,
             },
           ],

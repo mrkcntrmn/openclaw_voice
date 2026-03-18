@@ -38,6 +38,13 @@ export default defineConfig(() => {
       host: true,
       port: 5173,
       strictPort: true,
+      proxy: {
+        "^/__openclaw/.*": {
+          target: process.env.OPENCLAW_GATEWAY_URL || "http://127.0.0.1:3000",
+          changeOrigin: true,
+          ws: true,
+        },
+      },
     },
   };
 });
