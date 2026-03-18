@@ -450,6 +450,15 @@ function resolveRealtimeAudioFormat(
   };
 }
 
+function resolveRealtimeVoiceId(session: Record<string, unknown> | null): string | undefined {
+  const direct = normalizeNonEmptyString(session?.voice);
+  if (direct) {
+    return direct;
+  }
+  const output = resolveRealtimeAudioSection(session, "output");
+  return normalizeNonEmptyString(output?.voice);
+}
+
 function buildDefaultSessionKey(prefix: string, hint = "browser"): string {
   return `${prefix}:${hint}:${randomUUID()}`;
 }
@@ -642,7 +651,6 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     this.emit("state", { state: "connecting" } satisfies VoiceStateEvent);
     this.ws = await createWebSocket(websocketUrl, {
       Authorization: `Bearer ${apiKey}`,
-      "OpenAI-Beta": "realtime=v1",
       ...options.provider.headers,
     });
     debugVoice("voice provider connect complete", {
@@ -687,9 +695,9 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
     const sessionUpdate: Record<string, unknown> = {
       type: "session.update",
       session: {
+        type: "realtime",
         instructions: options.instructions,
         output_modalities: ["audio"],
-        voice: this.sessionVoiceId,
         audio: {
           input: {
             format: {
@@ -701,6 +709,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
             },
           },
           output: {
+            voice: this.sessionVoiceId,
             format: {
               type: outputFormat,
               rate: options.sampleRateHz,
@@ -1007,7 +1016,7 @@ class OpenAIRealtimeVoiceAdapter extends VoiceAdapter {
       providerId: this.providerId,
       eventType,
       modalities,
-      voiceId: normalizeNonEmptyString(session?.voice),
+      voiceId: resolveRealtimeVoiceId(session),
       turnDetectionType: normalizeNonEmptyString(turnDetection?.type),
       transcriptionModel: normalizeNonEmptyString(transcription?.model),
       inputAudioFormat: inputFormat?.type,

@@ -387,11 +387,12 @@ describe("voice adapters", () => {
       ]),
     );
     expect(ws?.url).toContain("api.openai.com");
+    expect(ws?.headers?.["OpenAI-Beta"]).toBeUndefined();
     expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
       type: "session.update",
       session: {
+        type: "realtime",
         output_modalities: ["audio"],
-        voice: "marin",
         audio: {
           input: {
             format: { type: "audio/pcm", rate: 24_000 },
@@ -399,6 +400,7 @@ describe("voice adapters", () => {
             turn_detection: { type: "server_vad" },
           },
           output: {
+            voice: "marin",
             format: { type: "audio/pcm", rate: 24_000 },
           },
         },
@@ -418,6 +420,7 @@ describe("voice adapters", () => {
       },
     });
     expect(JSON.parse(String(ws?.sent[0])).session).not.toHaveProperty("modalities");
+    expect(JSON.parse(String(ws?.sent[0])).session).not.toHaveProperty("voice");
 
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: "Good" });
     ws?.emitJson({ type: "conversation.item.input_audio_transcription.delta", delta: " morning" });
@@ -478,6 +481,7 @@ describe("voice adapters", () => {
     ws.emitJson({
       type: "session.updated",
       session: {
+        type: "realtime",
         output_modalities: ["audio"],
         audio: {
           input: {
@@ -486,6 +490,7 @@ describe("voice adapters", () => {
             turn_detection: { type: "server_vad" },
           },
           output: {
+            voice: "marin",
             format: { type: "audio/pcm", rate: 24_000 },
           },
         },
@@ -511,7 +516,12 @@ describe("voice adapters", () => {
     expect(JSON.parse(String(ws?.sent[0]))).toMatchObject({
       type: "session.update",
       session: {
-        voice: "cedar",
+        type: "realtime",
+        audio: {
+          output: {
+            voice: "cedar",
+          },
+        },
       },
     });
   });

@@ -146,8 +146,8 @@ async function connectOpenAIAdapter() {
   ws.emitJson({
     type: "session.created",
     session: {
+      type: "realtime",
       output_modalities: ["audio"],
-      voice: "marin",
       audio: {
         input: {
           format: { type: "audio/pcm", rate: 24_000 },
@@ -155,6 +155,7 @@ async function connectOpenAIAdapter() {
           turn_detection: { type: "server_vad" },
         },
         output: {
+          voice: "marin",
           format: { type: "audio/pcm", rate: 24_000 },
         },
       },
@@ -198,8 +199,8 @@ describe("voice runtime debug logging", () => {
     ws?.emitJson({
       type: "session.updated",
       session: {
+        type: "realtime",
         output_modalities: ["audio"],
-        voice: "marin",
         audio: {
           input: {
             format: { type: "audio/pcm", rate: 24_000 },
@@ -207,6 +208,7 @@ describe("voice runtime debug logging", () => {
             turn_detection: { type: "server_vad" },
           },
           output: {
+            voice: "marin",
             format: { type: "audio/pcm", rate: 24_000 },
           },
         },
@@ -260,8 +262,8 @@ describe("voice runtime debug logging", () => {
       ws?.emitJson({
         type: "session.updated",
         session: {
+          type: "realtime",
           output_modalities: ["audio"],
-          voice: "marin",
           audio: {
             input: {
               format: { type: "audio/pcm", rate: 24_000 },
@@ -269,6 +271,7 @@ describe("voice runtime debug logging", () => {
               turn_detection: { type: "server_vad" },
             },
             output: {
+              voice: "marin",
               format: { type: "audio/pcm", rate: 24_000 },
             },
           },
@@ -311,8 +314,8 @@ describe("voice runtime debug logging", () => {
     ws?.emitJson({
       type: "session.updated",
       session: {
+        type: "realtime",
         output_modalities: ["audio"],
-        voice: "marin",
         audio: {
           input: {
             format: { type: "audio/pcm", rate: 24_000 },
@@ -320,6 +323,7 @@ describe("voice runtime debug logging", () => {
             turn_detection: { type: "server_vad" },
           },
           output: {
+            voice: "marin",
             format: { type: "audio/pcm", rate: 24_000 },
           },
         },
@@ -345,8 +349,8 @@ describe("voice runtime debug logging", () => {
     ws?.emitJson({
       type: "session.updated",
       session: {
+        type: "realtime",
         output_modalities: ["audio"],
-        voice: "marin",
         audio: {
           input: {
             format: { type: "audio/pcm", rate: 24_000 },
@@ -354,6 +358,7 @@ describe("voice runtime debug logging", () => {
             turn_detection: { type: "server_vad" },
           },
           output: {
+            voice: "marin",
             format: { type: "audio/pcm", rate: 24_000 },
           },
         },
@@ -391,8 +396,8 @@ describe("voice runtime debug logging", () => {
       ws?.emitJson({
         type: "session.updated",
         session: {
+          type: "realtime",
           output_modalities: ["audio"],
-          voice: "marin",
           audio: {
             input: {
               format: { type: "audio/pcm", rate: 24_000 },
@@ -400,6 +405,7 @@ describe("voice runtime debug logging", () => {
               turn_detection: { type: "server_vad" },
             },
             output: {
+              voice: "marin",
               format: { type: "audio/pcm", rate: 24_000 },
             },
           },
